@@ -37,3 +37,11 @@ export class CreateUnitDto {
   @IsUUID()
   parentId?: string;
 }
+
+/** Lý do ngừng sử dụng (không bắt buộc). */
+export class DeactivateDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}

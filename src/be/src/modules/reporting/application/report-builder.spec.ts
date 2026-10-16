@@ -52,6 +52,18 @@ describe('computeStats', () => {
     expect(stats.ratings).toEqual({ XUAT_SAC: 1, HOAN_THANH_TOT: 1, HOAN_THANH: 1, KHONG_HOAN_THANH: 0 });
   });
 
+  it('cán bộ kiêm nhiệm có hai phiếu: đếm phiếu và xếp loại theo phiếu, số người loại trùng (ADR-047)', () => {
+    const stats = computeStats([
+      row({ fullName: 'A', personId: 'p-a', status: 'APPROVED', totalScore: 95, rating: 'XUAT_SAC', positionTitle: 'Chuyên viên' }),
+      row({ fullName: 'A', personId: 'p-a', status: 'APPROVED', totalScore: 82, rating: 'HOAN_THANH_TOT', positionTitle: 'Phó phòng (kiêm nhiệm)' }),
+      row({ fullName: 'B', personId: 'p-b', status: 'APPROVED', totalScore: 85, rating: 'HOAN_THANH_TOT' }),
+    ]);
+    expect(stats).toMatchObject({ evaluations: 3, people: 2, approved: 3 });
+    expect(stats.ratings).toEqual({ XUAT_SAC: 1, HOAN_THANH_TOT: 2, HOAN_THANH: 0, KHONG_HOAN_THANH: 0 });
+    // Hạn mức xuất sắc đếm theo phiếu: 20% của 2 phiếu hoàn thành tốt, làm tròn 0,4 -> 0.
+    expect(stats.excellentQuota).toMatchObject({ excellent: 1, good: 2, allowed: 0, exceeded: true });
+  });
+
   it('không có hồ sơ hoặc chưa có hồ sơ nào được duyệt thì các số liệu điểm rỗng, không chia cho 0', () => {
     expect(computeStats([])).toMatchObject({ evaluations: 0, approved: 0, completionRate: null, averageTotal: null, minTotal: null, maxTotal: null });
     expect(computeStats([pending('A', 'PLANNED')])).toMatchObject({ completionRate: 0, averageTotal: null });

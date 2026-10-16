@@ -5,7 +5,7 @@ import ExcelJS from 'exceljs';
 import pdfmake from 'pdfmake';
 import { formatNumber, formatPercent } from '../application/draft-templates.js';
 import { RATING_LABELS, RATINGS, STATUS_LABELS } from '../application/report.model.js';
-import type { PeriodReport, Stats } from '../application/report.model.js';
+import type { PeriodReport, Stats, UnitReport } from '../application/report.model.js';
 import { ReportRenderer } from '../application/report.ports.js';
 import { renderDraftDocx } from './draft-docx.js';
 
@@ -112,6 +112,70 @@ export class FileReportRenderer extends ReportRenderer {
     for (const col of [6, 7, 8]) detail.getColumn(col).numFmt = '0.00';
 
     return Buffer.from(await wb.xlsx.writeBuffer());
+  }
+
+  async renderUnitExcel(report: UnitReport): Promise<Buffer> {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = GENERATOR;
+    wb.created = report.generatedAt;
+    const ws = wb.addWorksheet('Tập thể');
+    ws.columns = [{ width: 6 }, { width: 36 }, { width: 28 }, { width: 34 }, { width: 14 }, { width: 14 }, { width: 12 }, { width: 28 }, { width: 12 }];
+    const bold = (row: ExcelJS.Row) => (row.font = { bold: true });
+    bold(ws.addRow(['BÁO CÁO KẾT QUẢ ĐÁNH GIÁ, XẾP LOẠI CHẤT LƯỢNG TẬP THỂ']));
+    ws.addRow(['Kỳ', `Năm ${report.period.label} (${report.period.startDate} đến ${report.period.endDate})`]);
+    ws.addRow(['Phạm vi dữ liệu', report.scope === 'ALL' ? 'Toàn bộ hồ sơ của kỳ' : 'Chỉ các hồ sơ trong phạm vi của người xuất']);
+    ws.addRow(['Thời điểm lập', report.generatedAt.toISOString()]);
+    ws.addRow([]);
+    bold(ws.addRow(['Tổng hợp']));
+    ws.addRow(['Tổng số tập thể', report.units]);
+    ws.addRow(['Đã phê duyệt', report.approved]);
+    ws.addRow(['Chờ phê duyệt', report.pendingApproval]);
+    ws.addRow(['Đang thực hiện', report.inProgress]);
+    ws.addRow(['Điểm trung bình (đã phê duyệt)', report.averageTotal]).getCell(2).numFmt = '0.00';
+    for (const r of RATINGS) ws.addRow([RATING_LABELS[r], report.ratings[r]]);
+    ws.addRow(['Hạn mức xuất sắc tối đa (20% số tập thể hoàn thành tốt)', report.quota.allowed]);
+    ws.addRow([]);
+    bold(ws.addRow(['STT', 'Tập thể', 'Người đứng đầu', 'Trạng thái', 'Điểm tiêu chí chung', 'Điểm kết quả nhiệm vụ', 'Tổng điểm', 'Xếp loại', 'Cảnh báo']));
+    report.rows.forEach((r, i) => {
+      const row = ws.addRow([
+        i + 1, r.unitName, r.headName, STATUS_LABELS[r.status], r.generalScore, r.resultScore, r.totalScore,
+        r.rating ? RATING_LABELS[r.rating] : null, r.warnings > 0 ? r.warnings : null,
+      ]);
+      for (const c of [5, 6, 7]) row.getCell(c).numFmt = '0.00';
+    });
+    ws.addRow([]);
+    bold(ws.addRow(['Lưu ý']));
+    for (const note of report.notes) ws.addRow([note]);
+
+    if (report.axisSummary.length > 0) this.addAxisSheet(wb, report);
+    return Buffer.from(await wb.xlsx.writeBuffer());
+  }
+
+  /** Trang "Theo trục": mỗi hồ sơ đã phê duyệt một dòng, mỗi trục một cột, kèm dòng trung bình (ADR-037). */
+  private addAxisSheet(wb: ExcelJS.Workbook, report: UnitReport): void {
+    const sheet = wb.addWorksheet('Theo trục');
+    const axes = report.axisSummary;
+    sheet.columns = [{ width: 6 }, { width: 34 }, ...axes.map(() => ({ width: 18 })), { width: 12 }];
+    sheet.addRow(['BÁO CÁO ĐIỂM TẬP THỂ THEO TRỤC']).font = { bold: true };
+    sheet.addRow(['Kỳ', `Năm ${report.period.label}`]);
+    sheet.addRow(['Chỉ tính hồ sơ đã phê duyệt có chấm theo trục; điểm tối đa lấy theo cấu hình lúc chấm.']);
+    sheet.addRow([]);
+    const head = sheet.addRow(['STT', 'Tập thể', ...axes.map((a) => `${a.code} ${a.name} (tối đa ${a.maxPoints})`), 'Tổng điểm']);
+    head.font = { bold: true };
+    head.alignment = { wrapText: true, vertical: 'top' };
+    const approved = report.rows.filter((r) => r.status === 'APPROVED' && r.axes.length > 0);
+    approved.forEach((r, i) => {
+      const row = sheet.addRow([i + 1, r.unitName, ...axes.map((a) => r.axes.find((x) => x.code === a.code)?.points ?? null), r.totalScore]);
+      for (let c = 3; c < 4 + axes.length; c++) row.getCell(c).numFmt = '0.00';
+    });
+    const avg = sheet.addRow(['', 'Trung bình', ...axes.map((a) => a.average), null]);
+    avg.font = { bold: true };
+    const pct = sheet.addRow(['', 'Tỷ lệ trên điểm tối đa', ...axes.map((a) => a.ratio), null]);
+    for (let c = 3; c < 3 + axes.length; c++) {
+      avg.getCell(c).numFmt = '0.00';
+      pct.getCell(c).numFmt = '0%';
+    }
+    sheet.addRow(['', 'Thấp nhất', ...axes.map((a) => a.lowest), null]);
   }
 
   async renderPdf(report: PeriodReport): Promise<Buffer> {

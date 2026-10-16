@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-import type { AssignmentStatus, CommentKind, PeriodMode, ProgressStatus, ReportKind } from '../application/tasking.model.js';
+import type { RecurringFrequency, TemplateStatus } from '../application/recurring.model.js';
+import type { AssignmentSource, AssignmentStatus, CommentKind, PeriodMode, ProgressStatus, ReportKind } from '../application/tasking.model.js';
 
 @Entity('work_task')
 export class WorkTaskEntity {
@@ -62,6 +63,24 @@ export class WorkAssignmentEntity {
 
   @Column({ name: 'approver_person_id', type: 'uuid', nullable: true })
   approverPersonId: string | null;
+
+  @Column({ name: 'okr_key_result', type: 'text', nullable: true })
+  okrKeyResult: string | null;
+
+  @Column({ type: 'varchar', length: 8, default: 'CATALOG' })
+  source: AssignmentSource;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  title: string | null;
+
+  @Column({ name: 'recurring_template_id', type: 'uuid', nullable: true })
+  recurringTemplateId: string | null;
+
+  @Column({ name: 'recurring_key', type: 'varchar', length: 10, nullable: true })
+  recurringKey: string | null;
+
+  @Column({ name: 'position_id', type: 'uuid', nullable: true })
+  positionId: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
@@ -173,4 +192,70 @@ export class WorkAttachmentEntity {
 
   @CreateDateColumn({ name: 'uploaded_at', type: 'timestamptz' })
   uploadedAt: Date;
+}
+
+@Entity('recurring_template')
+export class RecurringTemplateEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'assignee_person_id', type: 'uuid' })
+  assigneePersonId: string;
+
+  @Column({ name: 'task_id', type: 'uuid' })
+  taskId: string;
+
+  @Column({ type: 'varchar', length: 8, default: 'CATALOG' })
+  source: AssignmentSource;
+
+  @Column({ name: 'catalog_item_code', type: 'varchar', length: 10 })
+  catalogItemCode: string;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  title: string | null;
+
+  @Column({ name: 'planned_quantity', type: 'int' })
+  plannedQuantity: number;
+
+  @Column({ type: 'varchar', length: 10 })
+  frequency: RecurringFrequency;
+
+  @Column({ name: 'start_date', type: 'date' })
+  startDate: string;
+
+  @Column({ name: 'end_date', type: 'date', nullable: true })
+  endDate: string | null;
+
+  @Column({ name: 'due_after_days', type: 'smallint' })
+  dueAfterDays: number;
+
+  @Column({ name: 'period_mode', type: 'varchar', length: 6, default: 'AUTO' })
+  periodMode: PeriodMode;
+
+  @Column({ name: 'report_kinds', type: 'text', array: true })
+  reportKinds: ReportKind[];
+
+  @Column({ type: 'text', nullable: true })
+  note: string | null;
+
+  @Column({ name: 'approver_person_id', type: 'uuid', nullable: true })
+  approverPersonId: string | null;
+
+  @Column({ type: 'varchar', length: 10, default: 'ACTIVE' })
+  status: TemplateStatus;
+
+  @Column({ name: 'created_by', type: 'uuid' })
+  createdBy: string;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @Column({ name: 'inactive_at', type: 'timestamptz', nullable: true })
+  inactiveAt: Date | null;
+
+  @Column({ name: 'last_run_at', type: 'timestamptz', nullable: true })
+  lastRunAt: Date | null;
+
+  @Column({ name: 'last_error', type: 'text', nullable: true })
+  lastError: string | null;
 }

@@ -5,7 +5,7 @@ import type { Response } from 'express';
 import { AuthorizationService, CurrentAccount, RequirePermission } from '../../security/index.js';
 import type { CurrentAccountModel } from '../../security/index.js';
 import type { Draft } from '../application/draft-templates.js';
-import type { PeriodReport, Trend } from '../application/report.model.js';
+import type { PeriodReport, Trend, UnitReport } from '../application/report.model.js';
 import { ReportService } from '../application/report.service.js';
 import type { ExportFormat } from '../application/report.service.js';
 
@@ -15,9 +15,11 @@ class ExportQueryDto {
 }
 
 class DraftQueryDto {
-  @IsIn(['report', 'decision'])
-  kind: 'report' | 'decision';
+  @IsIn(['report', 'decision', 'notice'])
+  kind: 'report' | 'decision' | 'notice';
 }
+
+const DRAFT_KIND = { report: 'REPORT', decision: 'DECISION', notice: 'NOTICE' } as const;
 
 class TrendQueryDto {
   @IsIn(['MONTH', 'QUARTER', 'YEAR'])
@@ -83,7 +85,7 @@ export class ReportController {
     @Query() query: DraftQueryDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
-    const file = await this.reports.exportDraft(actor, periodId, query.kind === 'report' ? 'REPORT' : 'DECISION', await this.canReadAll(actor));
+    const file = await this.reports.exportDraft(actor, periodId, DRAFT_KIND[query.kind], await this.canReadAll(actor));
     res.set({ 'Content-Type': file.contentType, 'Content-Disposition': `attachment; filename="${file.filename}"`, 'Cache-Control': 'no-store' });
     return new StreamableFile(file.buffer);
   }
@@ -96,6 +98,36 @@ export class ReportController {
     @Param('id', ParseUUIDPipe) periodId: string,
     @Query() query: DraftQueryDto,
   ): Promise<Draft> {
-    return this.reports.draft(actor, periodId, query.kind === 'report' ? 'REPORT' : 'DECISION', await this.canReadAll(actor));
+    return this.reports.draft(actor, periodId, DRAFT_KIND[query.kind], await this.canReadAll(actor));
+  }
+
+  // ---- tập thể (ADR-031)
+
+  @Get('periods/:id/units')
+  @RequirePermission('report:read')
+  async unitReport(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) periodId: string): Promise<UnitReport> {
+    return this.reports.unitReport(actor, periodId, await this.canReadAll(actor));
+  }
+
+  @Get('periods/:id/units/export')
+  @RequirePermission('report:export')
+  async exportUnits(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) periodId: string, @Res({ passthrough: true }) res: Response): Promise<StreamableFile> {
+    const file = await this.reports.exportUnits(actor, periodId, await this.canReadAll(actor));
+    res.set({ 'Content-Type': file.contentType, 'Content-Disposition': `attachment; filename="${file.filename}"`, 'Cache-Control': 'no-store' });
+    return new StreamableFile(file.buffer);
+  }
+
+  @Get('periods/:id/units/draft/file')
+  @RequirePermission('report:draft')
+  async unitDraftFile(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) periodId: string, @Res({ passthrough: true }) res: Response): Promise<StreamableFile> {
+    const file = await this.reports.exportUnitDraft(actor, periodId, await this.canReadAll(actor));
+    res.set({ 'Content-Type': file.contentType, 'Content-Disposition': `attachment; filename="${file.filename}"`, 'Cache-Control': 'no-store' });
+    return new StreamableFile(file.buffer);
+  }
+
+  @Get('periods/:id/units/draft')
+  @RequirePermission('report:draft')
+  async unitDraft(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) periodId: string): Promise<Draft> {
+    return this.reports.unitDraft(actor, periodId, await this.canReadAll(actor));
   }
 }

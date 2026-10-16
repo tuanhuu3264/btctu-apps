@@ -4,6 +4,7 @@ import { AuditService } from '../../../security/index.js';
 import { CatalogImportService } from '../catalog-import.service.js';
 import type {
   CatalogGroupModel,
+  CatalogInactiveInfo,
   CatalogItemModel,
   CatalogItemPatch,
   CatalogScope,
@@ -101,7 +102,7 @@ export class InMemoryTasks extends CatalogTaskRepository {
     return this.rows.filter((t) => t.versionId === versionId);
   }
   async create(data: NewCatalogTask) {
-    const row = { ...data, id: nextId('t') };
+    const row: CatalogTaskModel = { ...data, status: 'ACTIVE', inactiveAt: null, inactiveReason: null, id: nextId('t') };
     this.rows.push(row);
     return row;
   }
@@ -110,8 +111,10 @@ export class InMemoryTasks extends CatalogTaskRepository {
     Object.assign(row, patch);
     return row;
   }
-  async delete(id: string) {
-    this.rows = this.rows.filter((t) => t.id !== id);
+  async setStatus(id: string, info: CatalogInactiveInfo) {
+    const row = this.rows.find((t) => t.id === id)!;
+    Object.assign(row, info);
+    return row;
   }
   async countByGroup(groupCode: string) {
     return this.rows.filter((t) => t.groupCode === groupCode).length;
@@ -127,7 +130,7 @@ export class InMemoryItems extends CatalogItemRepository {
     return this.rows.filter((i) => i.versionId === versionId);
   }
   async create(data: NewCatalogItem) {
-    const row = { ...data, id: nextId('i') };
+    const row: CatalogItemModel = { ...data, status: 'ACTIVE', inactiveAt: null, inactiveReason: null, id: nextId('i') };
     this.rows.push(row);
     return row;
   }
@@ -136,8 +139,10 @@ export class InMemoryItems extends CatalogItemRepository {
     Object.assign(row, patch);
     return row;
   }
-  async delete(id: string) {
-    this.rows = this.rows.filter((i) => i.id !== id);
+  async setStatus(id: string, info: CatalogInactiveInfo) {
+    const row = this.rows.find((i) => i.id === id)!;
+    Object.assign(row, info);
+    return row;
   }
   async countByGroup(groupCode: string) {
     return this.rows.filter((i) => i.groupCode === groupCode).length;

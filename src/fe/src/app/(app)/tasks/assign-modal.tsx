@@ -3,10 +3,11 @@
 import { Alert, Checkbox, DatePicker, Divider, Form, Input, InputNumber, Modal, Radio, Select } from 'antd';
 import CatalogItemPicker from '@/components/catalog-item-picker';
 import type { PickerGroup, PickerItem, PickerTask } from '@/components/catalog-item-picker';
-import type { OrgUnit, PeriodMode, ReportKind, WorkTask } from '@/lib/api';
-import { apiCall } from '@/lib/client';
+import { useEffect, useState } from 'react';
+import type { Okr, OrgUnit, PeriodMode, ReportKind, WorkTask } from '@/lib/api';
+import { apiCall, apiGet } from '@/lib/client';
 import { REPORT_KIND_LABELS } from '@/lib/labels';
-import { holderLabel, holdersOf, superiorsOf } from '@/lib/org';
+import { holderLabel, holdersOf, superiorsOf, uniqueByPerson } from '@/lib/org';
 import { inScope } from '@/lib/scope';
 import { useAction } from '@/lib/use-action';
 
@@ -17,6 +18,19 @@ export interface Assignee {
   unitId: string;
   positionId: string;
 }
+
+/** Cán bộ kiêm nhiệm có nhiều dòng (mỗi vị trí một dòng): danh sách chọn người chỉ hiện mỗi người một lần. */
+export function assigneeOptions(assignees: Assignee[]): { value: string; label: string }[] {
+  const byPerson = new Map<string, Assignee[]>();
+  for (const a of assignees) byPerson.set(a.personId, [...(byPerson.get(a.personId) ?? []), a]);
+  return [...byPerson].map(([personId, entries]) => ({
+    value: personId,
+    label: entries.length > 1 ? `${entries[0].label.split(' – ')[0]} (giữ ${entries.length} vị trí)` : entries[0].label,
+  }));
+}
+
+/** Các vị trí của một người nhận mà người giao là cấp trên; chỉ có nhiều hơn một với cán bộ kiêm nhiệm (ADR-047). */
+export const positionsOf = (assignees: Assignee[], personId: string | undefined) => assignees.filter((a) => a.personId === personId);
 
 interface Values {
   assigneePersonId: string;
@@ -34,6 +48,9 @@ interface Values {
   note?: string;
   approverPersonId?: string;
   consultantPersonIds?: string[];
+  keyResult?: string;
+  /** Chỉ chọn khi người nhận kiêm nhiệm nhiều vị trí. */
+  positionId?: string;
 }
 
 interface Props {
@@ -72,13 +89,28 @@ export default function AssignModal({ assignees, tasks, catalogItems, catalogGro
   const hasTask = preset !== null || (taskMode === 'catalog' ? Boolean(catalogTaskId) : taskMode === 'new' ? (taskTitle ?? '').trim().length >= 3 : Boolean(taskId));
   const presetPerson = preset ? assignees.find((a) => a.personId === preset.assigneePersonId) : undefined;
   // Công việc có phạm vi chỉ hiện cho người thuộc phạm vi đó; việc chung hiện cho mọi người.
-  const recipient = assignees.find((a) => a.personId === (preset?.assigneePersonId ?? assigneeId));
+  const positionChoice = Form.useWatch('positionId', form);
+  const entries = positionsOf(assignees, preset?.assigneePersonId ?? assigneeId);
+  const recipient = entries.find((a) => a.positionId === positionChoice) ?? entries[0];
   const target = recipient ? { unitId: recipient.unitId, positionId: recipient.positionId } : null;
   const availableItems = recipient ? catalogItems.filter((i) => inScope(i, target)) : catalogItems;
   const hiddenCount = catalogItems.length - availableItems.length;
   const assigneeKey = preset?.assigneePersonId ?? assigneeId;
-  const superiors = assigneeKey ? superiorsOf(tree, assigneeKey) : [];
-  const everyone = holdersOf(tree).filter((h) => h.personId !== assigneeKey);
+  // OKR của người nhận (ADR-034): để chọn kết quả then chốt mà việc góp phần đạt. Không tải được thì bỏ qua, việc vẫn giao được.
+  const [okr, setOkr] = useState<{ personId: string; okr: Okr } | null>(null);
+  useEffect(() => {
+    if (!assigneeKey) return;
+    let cancelled = false;
+    apiGet<Okr>(`/tasking/okr/${assigneeKey}`)
+      .then((o) => !cancelled && setOkr({ personId: assigneeKey, okr: o }))
+      .catch(() => !cancelled && setOkr(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [assigneeKey]);
+  const recipientOkr = okr && okr.personId === assigneeKey ? okr.okr : null;
+  const superiors = assigneeKey ? superiorsOf(tree, assigneeKey, recipient?.positionId) : [];
+  const everyone = uniqueByPerson(holdersOf(tree)).filter((h) => h.personId !== assigneeKey);
   const chosenCatalogTask = catalogTasks.find((t) => t.id === catalogTaskId);
   // Chế độ danh mục: chỉ các công việc của nhiệm vụ đã chọn. Nhiệm vụ không còn công việc nào dành cho người nhận thì không hiện.
   const pickableItems = taskMode === 'catalog' && !preset ? availableItems.filter((i) => i.taskId === catalogTaskId) : availableItems;
@@ -118,6 +150,7 @@ export default function AssignModal({ assignees, tasks, catalogItems, catalogGro
         try {
           await apiCall('POST', '/tasking/assignments', {
             taskId: id,
+            ...(recipient ? { positionId: recipient.positionId } : {}),
             catalogItemCode: v.catalogItemCode,
             plannedQuantity: v.plannedQuantity,
             dueDate: v.dueDate.format('YYYY-MM-DD'),
@@ -125,6 +158,7 @@ export default function AssignModal({ assignees, tasks, catalogItems, catalogGro
             ...(v.periodMode === 'MANUAL' ? { reportKinds: v.reportKinds } : {}),
             ...(v.note?.trim() ? { note: v.note.trim() } : {}),
             ...(v.approverPersonId ? { approverPersonId: v.approverPersonId } : {}),
+            ...(v.keyResult ? { keyResult: v.keyResult } : {}),
             ...((v.consultantPersonIds ?? []).length > 0 ? { consultantPersonIds: v.consultantPersonIds } : {}),
           });
         } catch (e) {
@@ -170,9 +204,20 @@ export default function AssignModal({ assignees, tasks, catalogItems, catalogGro
                 showSearch
                 optionFilterProp="label"
                 placeholder="Chọn cán bộ"
-                options={assignees.map((a) => ({ value: a.personId, label: a.label }))}
-                onChange={() => form.setFieldsValue({ taskId: undefined, taskTitle: undefined, catalogTaskId: undefined, catalogItemCode: undefined, taskMode: 'catalog', approverPersonId: undefined, consultantPersonIds: [] })}
+                options={assigneeOptions(assignees)}
+                onChange={() => form.setFieldsValue({ positionId: undefined, taskId: undefined, taskTitle: undefined, catalogTaskId: undefined, catalogItemCode: undefined, taskMode: 'catalog', approverPersonId: undefined, keyResult: undefined, consultantPersonIds: [] })}
               />
+            </Form.Item>
+          )}
+
+          {entries.length > 1 && (
+            <Form.Item
+              name="positionId"
+              label="Việc thuộc vị trí"
+              rules={[{ required: true, message: 'Chọn vị trí' }]}
+              extra="Cán bộ kiêm nhiệm có phiếu đánh giá riêng cho từng vị trí: việc này chỉ tính vào phiếu của vị trí được chọn, và do cấp trên của vị trí đó xác nhận."
+            >
+              <Select placeholder="Chọn vị trí" options={entries.map((a) => ({ value: a.positionId, label: a.label.split(' – ').slice(1).join(' – ') }))} onChange={() => form.setFieldsValue({ approverPersonId: undefined, keyResult: undefined })} />
             </Form.Item>
           )}
 
@@ -261,6 +306,15 @@ export default function AssignModal({ assignees, tasks, catalogItems, catalogGro
               <Form.Item name="note" label="Nội dung việc">
                 <Input.TextArea rows={4} maxLength={4000} showCount placeholder="Yêu cầu, phạm vi, căn cứ, lưu ý cho người thực hiện" />
               </Form.Item>
+              {recipientOkr && recipientOkr.keyResults.length > 0 && (
+                <Form.Item
+                  name="keyResult"
+                  label="Kết quả then chốt (OKR) của người nhận"
+                  extra={recipientOkr.objective ? `Mục tiêu: ${recipientOkr.objective}. Chỉ để theo dõi tiến độ, không ảnh hưởng điểm.` : 'Chỉ để theo dõi tiến độ, không ảnh hưởng điểm.'}
+                >
+                  <Select allowClear placeholder="Không gắn" options={recipientOkr.keyResults.map((k) => ({ value: k.code, label: `${k.code}: ${k.text}` }))} />
+                </Form.Item>
+              )}
               <Form.Item name="approverPersonId" label="Người duyệt (cc)" extra="Người xác nhận hoặc từ chối báo cáo của việc này. Để trống: cấp trên trực tiếp.">
                 <Select
                   allowClear

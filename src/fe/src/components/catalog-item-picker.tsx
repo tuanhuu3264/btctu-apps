@@ -19,11 +19,15 @@ export interface PickerItem {
   coefficient: number | null;
   unitIds?: string[];
   positionIds?: string[];
+  /** Công việc đã ngừng sử dụng không được chọn để giao việc mới. */
+  status?: 'ACTIVE' | 'INACTIVE';
 }
 
 export interface PickerGroup {
   code: string;
   name: string;
+  /** Công việc đã ngừng sử dụng không được chọn để giao việc mới. */
+  status?: 'ACTIVE' | 'INACTIVE';
 }
 
 export interface PickerTask {
@@ -67,7 +71,7 @@ const metaText = (i: PickerItem) =>
  * gõ mã hoặc tên (không cần dấu) để lọc; chọn xong hiện khung chi tiết. Dùng được trong Form.Item.
  */
 export default function CatalogItemPicker({ id, items, groups, tasks = [], value, onChange, exclude = [], placeholder }: Props) {
-  const available = useMemo(() => items.filter((i) => !exclude.includes(i.code)), [items, exclude]);
+  const available = useMemo(() => items.filter((i) => i.status !== 'INACTIVE' && !exclude.includes(i.code)), [items, exclude]);
   const options = useMemo(() => {
     const leaf = (i: PickerItem) => ({ value: i.code, label: `${i.code} ${i.name}`, item: i });
     // Có nhiệm vụ: mỗi nhiệm vụ một nhóm lựa chọn, ghi rõ thuộc nhóm nào. Công việc chưa gắn nhiệm vụ rơi về nhóm.

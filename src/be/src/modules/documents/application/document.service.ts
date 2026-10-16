@@ -1,3 +1,4 @@
+import { snapshot } from '../../../common/audit-snapshot.js';
 import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Notifier } from '../../../common/notifier.js';
@@ -82,9 +83,15 @@ export class DocumentService {
   }
 
   async updateCategory(id: string, input: { name: string; description?: string | null }): Promise<CategoryModel> {
-    await this.requireCategory(id);
+    const before = await this.requireCategory(id);
     const updated = await this.categories.update(id, await this.cleanCategory(input, id));
-    await this.audit.record({ action: 'document.category.update', outcome: 'SUCCESS', targetType: 'document_category', targetId: id, details: { name: updated.name } });
+    await this.audit.record({
+      action: 'document.category.update',
+      outcome: 'SUCCESS',
+      targetType: 'document_category',
+      targetId: id,
+      details: { name: updated.name, changed: ['name', 'description'], before: snapshot(before, ['name', 'description']), after: snapshot(updated, ['name', 'description']) },
+    });
     return updated;
   }
 
@@ -138,7 +145,7 @@ export class DocumentService {
     }
     if (Object.keys(patch).length === 0) throw new BadRequestException('Không có gì để sửa');
     const updated = await this.posts.update(id, patch);
-    await this.audit.record({ action: 'document.post.update', outcome: 'SUCCESS', targetType: 'document_post', targetId: id, details: { changed: Object.keys(patch) } });
+    await this.audit.record({ action: 'document.post.update', outcome: 'SUCCESS', targetType: 'document_post', targetId: id, details: { changed: Object.keys(patch), before: snapshot(post, Object.keys(patch)), after: snapshot(updated, Object.keys(patch)) } });
     return (await this.views([updated]))[0];
   }
 

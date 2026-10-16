@@ -429,7 +429,7 @@ describe('EvaluationService: tạo hồ sơ từ việc được giao (ADR-016)'
 
     expect(h.work.asked).toEqual([{ type: 'QUARTER', startDate: '2026-07-01', endDate: '2026-09-30' }]);
     expect(result).toMatchObject({ period: '2026-Q3', created: 1, refreshed: 0, skipped: [], warnings: [] });
-    const evaluation = (await h.repos.evaluations.findByPeriodAndPerson(period.id, PEOPLE.staff))!;
+    const evaluation = ((await h.repos.evaluations.findByPersonInPeriod(period.id, PEOPLE.staff))[0])!;
     expect(evaluation).toMatchObject({ status: 'PLANNED', createdBy: 'acc-vanphong', positionId: 'pos-staff' });
 
     const lines = await h.repos.tasks.findByEvaluation(evaluation.id);
@@ -493,7 +493,7 @@ describe('EvaluationService: tạo hồ sơ từ việc được giao (ADR-016)'
     expect(result.skipped.find((s) => s.personId === PEOPLE.staff)!.reason).toContain('SELF_SUBMITTED');
     expect(result.warnings).toHaveLength(2);
     expect((await h.repos.evaluations.findById(evaluation.id))!.status).toBe('SELF_SUBMITTED'); // không bị đổi
-    expect(await h.repos.evaluations.findByPeriodAndPerson(period.id, PEOPLE.other)).toBeNull();
+    expect(await h.repos.evaluations.findByPersonInPeriod(period.id, PEOPLE.other)).toEqual([]);
   });
 
   it('kỳ đã đóng thì không tạo hồ sơ được', async () => {
@@ -507,7 +507,7 @@ describe('EvaluationService: tạo hồ sơ từ việc được giao (ADR-016)'
     const period = await quarter(h);
     h.work.items = [work({ plannedQuantity: 10, confirmedQuantity: 8 })];
     await h.service.generateFromWork(actorOf('head'), period.id);
-    const evaluation = (await h.repos.evaluations.findByPeriodAndPerson(period.id, PEOPLE.staff))!;
+    const evaluation = ((await h.repos.evaluations.findByPersonInPeriod(period.id, PEOPLE.staff))[0])!;
     const [line] = await h.repos.tasks.findByEvaluation(evaluation.id);
 
     await expect(h.service.recordResult(actorOf('staff'), line.id, { completedQuantity: 10 })).rejects.toBeInstanceOf(ConflictException);
@@ -585,15 +585,35 @@ describe('EvaluationService: tiêu chí lãnh đạo, chỉ đạo (D) của cá
   it('gợi ý D "kết quả hoạt động của đơn vị": 100% nếu cấp dưới đều từ hoàn thành, 50% nếu có người không hoàn thành, chưa có dữ liệu thì để trống', async () => {
     const { period, evaluation } = await deputyReady();
     const view = () => h.service.getEvaluation(actorOf('boss'), evaluation.id, false);
-    expect((await view()).leadershipSuggestion).toEqual({ unitResult: null });
+    expect((await view()).leadershipSuggestion).toEqual({ unitResult: null, solidarity: null, solidarityReason: null });
 
     // hồ sơ của trưởng phòng (cấp dưới của phó) đã thẩm định
     const headEval = await h.repos.evaluations.create({ periodId: period.id, personId: PEOPLE.head, positionId: 'pos-head', createdBy: null });
     await h.repos.evaluations.update(headEval.id, { status: 'REVIEWED', rating: 'HOAN_THANH_TOT' });
-    expect((await view()).leadershipSuggestion).toEqual({ unitResult: 1 });
+    expect((await view()).leadershipSuggestion).toMatchObject({ unitResult: 1 });
 
     await h.repos.evaluations.update(headEval.id, { rating: 'KHONG_HOAN_THANH' });
-    expect((await view()).leadershipSuggestion).toEqual({ unitResult: 0.5 });
+    expect((await view()).leadershipSuggestion).toMatchObject({ unitResult: 0.5 });
+  });
+
+  it('gợi ý D "đoàn kết": 50% khi đơn vị có phản ánh mất đoàn kết trong kỳ chưa bị xác minh là sai, ngoài ra 100% (Điều 15.3.c)', async () => {
+    const { evaluation } = await deputyReady();
+    h.org.positions.set(PEOPLE.deputy, { positionId: 'pos-deputy', unitId: 'u-ban', level: 2 });
+    const view = () => h.service.getEvaluation(actorOf('boss'), evaluation.id, false);
+    const add = (over: Record<string, unknown>) => h.complaints.create({ unitId: 'u-ban', periodId: 'x', kind: 'MAT_DOAN_KET', content: 'Mâu thuẫn kéo dài trong đơn vị', source: null, receivedOn: '2026-08-10', createdBy: null, ...over } as never);
+
+    expect((await view()).leadershipSuggestion).toMatchObject({ solidarity: 1, solidarityReason: expect.stringMatching(/không có phản ánh/) });
+    await add({ receivedOn: '2026-05-01' }); // ngoài kỳ
+    await add({ kind: 'PHAN_ANH' }); // loại khác
+    await add({ unitId: 'u-khac' }); // đơn vị khác
+    expect((await view()).leadershipSuggestion?.solidarity).toBe(1);
+
+    const issue = await add({});
+    expect((await view()).leadershipSuggestion).toMatchObject({ solidarity: 0.5, solidarityReason: expect.stringMatching(/1 phản ánh/) });
+    await h.complaints.update(issue.id, { status: 'CLOSED', outcome: 'UNFOUNDED', conclusion: 'Xác minh không đúng sự thật' });
+    expect((await view()).leadershipSuggestion?.solidarity).toBe(1);
+    await h.complaints.update(issue.id, { outcome: 'SUBSTANTIATED' });
+    expect((await view()).leadershipSuggestion?.solidarity).toBe(0.5);
   });
 
   it('người không lãnh đạo không có gợi ý D', async () => {

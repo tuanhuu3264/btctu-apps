@@ -19,6 +19,18 @@ import { PositionIsLeader1761100000000 } from './1761100000000-PositionIsLeader.
 import { PersonProfile1761200000000 } from './1761200000000-PersonProfile.js';
 import { CreateDocuments1761400000000 } from './1761400000000-CreateDocuments.js';
 import { CreateNotifications1761500000000 } from './1761500000000-CreateNotifications.js';
+import { CreateUnitEvaluation1761600000000 } from './1761600000000-CreateUnitEvaluation.js';
+import { AssignmentOkrKeyResult1761700000000 } from './1761700000000-AssignmentOkrKeyResult.js';
+import { UnitEvaluationAxes1761800000000 } from './1761800000000-UnitEvaluationAxes.js';
+import { RatingDeadlineAndComplaints1761900000000 } from './1761900000000-RatingDeadlineAndComplaints.js';
+import { LeaveAndNotRated1762000000000 } from './1762000000000-LeaveAndNotRated.js';
+import { OrgSoftDelete1762100000000 } from './1762100000000-OrgSoftDelete.js';
+import { CatalogSoftDelete1762200000000 } from './1762200000000-CatalogSoftDelete.js';
+import { AuditModuleType1762300000000 } from './1762300000000-AuditModuleType.js';
+import { CreateAccessReview1762400000000 } from './1762400000000-CreateAccessReview.js';
+import { AdHocAndRecurringWork1762500000000 } from './1762500000000-AdHocAndRecurringWork.js';
+import { ConcurrentAssignment1762600000000 } from './1762600000000-ConcurrentAssignment.js';
+import { PhieuTheoViTri1762700000000 } from './1762700000000-PhieuTheoViTri.js';
 import { TaskCollaboration1761300000000 } from './1761300000000-TaskCollaboration.js';
 
 /** Danh sách migration theo thứ tự. Thêm migration mới vào cuối mảng. */
@@ -45,4 +57,16 @@ export const migrations = [
   TaskCollaboration1761300000000,
   CreateDocuments1761400000000,
   CreateNotifications1761500000000,
+  CreateUnitEvaluation1761600000000,
+  AssignmentOkrKeyResult1761700000000,
+  UnitEvaluationAxes1761800000000,
+  RatingDeadlineAndComplaints1761900000000,
+  LeaveAndNotRated1762000000000,
+  OrgSoftDelete1762100000000,
+  CatalogSoftDelete1762200000000,
+  AuditModuleType1762300000000,
+  CreateAccessReview1762400000000,
+  AdHocAndRecurringWork1762500000000,
+  ConcurrentAssignment1762600000000,
+  PhieuTheoViTri1762700000000,
 ];

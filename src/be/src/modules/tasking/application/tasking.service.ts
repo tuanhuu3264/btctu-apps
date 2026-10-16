@@ -1,12 +1,21 @@
+import { adHocCoefficient, adHocCode, adHocLabel, adHocLevelOf, isAdHocLevel } from '../../../common/ad-hoc.js';
+import { snapshot } from '../../../common/audit-snapshot.js';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Clock } from '../../../common/clock.js';
 import { isInScope } from '../../../common/scope.js';
 import { Notifier } from '../../../common/notifier.js';
+import { buildExportFile, MAX_EXPORT_ROWS } from '../../../common/table-export.js';
+import type { ExportedTable, TableFormat } from '../../../common/table-export.js';
+import { buildTaskExport, taskStatistics } from './task-report.js';
+import type { TaskStatistics } from './task-report.js';
+import type { ParsedOkr } from '../../organization/index.js';
 import { AuditService } from '../../security/index.js';
 import { ASSIGNMENT_STATES, belongsToPeriod, isIsoDate, MAX_CONSULTANTS, MAX_CONTENT_LENGTH, MAX_QUANTITY, REPORT_KINDS, stateOf, summarize, todayVietnam } from './tasking.model.js';
 import type {
   AssignedWork,
   AssignmentModel,
+  AssignmentPatch,
+  AssignmentSource,
   AssignmentState,
   PeriodMode,
   PeriodRange,
@@ -15,7 +24,9 @@ import type {
   ReportKind,
   WorkTaskModel,
 } from './tasking.model.js';
+import type { RecurringTemplateModel } from './recurring.model.js';
 import { AssignmentRepository, CatalogDirectory, ConsultantRepository, OrgDirectory, ProgressRepository, WorkTaskRepository } from './tasking.ports.js';
+import type { CatalogItemInfo } from './tasking.ports.js';
 
 /** Người thao tác: tài khoản đang đăng nhập và cán bộ gắn với tài khoản đó (có thể chưa gắn). */
 export interface Actor {
@@ -37,12 +48,21 @@ export interface AssignmentView {
   approverPersonId: string | null;
   consultantPersonIds: string[];
   state: AssignmentState;
+  /** Mức độ khó (1 đến 4) của việc đột xuất; null với việc từ danh mục. */
+  adHocLevel: number | null;
 }
 
 export interface AssignInput {
   /** Nhiệm vụ chứa công việc; cán bộ nhận việc là người của nhiệm vụ đó. */
   taskId: string;
-  catalogItemCode: string;
+  /** CATALOG (mặc định): việc trong danh mục. AD_HOC: việc đột xuất, cần `title` và `difficulty` (ADR-046). */
+  source?: AssignmentSource;
+  /** Mã công việc trong danh mục; bắt buộc với CATALOG, bỏ qua với AD_HOC. */
+  catalogItemCode?: string;
+  /** Tên việc đột xuất, 3 đến 200 ký tự. */
+  title?: string;
+  /** Mức độ khó của việc đột xuất, 1 đến 4; quyết định hệ số quy đổi. */
+  difficulty?: number;
   plannedQuantity: number;
   dueDate: string;
   periodMode: PeriodMode;
@@ -53,9 +73,15 @@ export interface AssignInput {
   approverPersonId?: string | null;
   /** Người tham vấn, không bắt buộc, tối đa 10. */
   consultantPersonIds?: string[];
+  /** Mã kết quả then chốt (KR1...) trong OKR của người nhận mà việc này góp phần đạt (ADR-034). */
+  keyResult?: string | null;
+  /** Vị trí người nhận giữ mà việc này thuộc về. Bắt buộc khi người nhận kiêm nhiệm nhiều vị trí (ADR-047). */
+  positionId?: string | null;
 }
 
 export type ListScope = 'mine' | 'team' | 'all';
+export const WORK_KINDS = ['CATALOG', 'AD_HOC', 'RECURRING'] as const;
+export type WorkKind = (typeof WORK_KINDS)[number];
 /** Phạm vi theo dõi việc: ngoài ba phạm vi cũ còn được tham vấn, tôi là người duyệt, tôi đã giao (ADR-024). */
 export type SearchScope = ListScope | 'consulted' | 'approving' | 'assigned';
 
@@ -64,6 +90,8 @@ export interface SearchQuery {
   q?: string;
   states?: AssignmentState[];
   assigneePersonId?: string;
+  /** Loại việc: CATALOG (giao từ danh mục), AD_HOC (đột xuất), RECURRING (do mẫu lặp định kỳ sinh ra). */
+  kind?: WorkKind;
   dueFrom?: string;
   dueTo?: string;
   createdFrom?: string;
@@ -90,6 +118,20 @@ export const fold = (s: string): string =>
     .replace(/đ/g, 'd')
     .replace(/Đ/g, 'D')
     .toLowerCase();
+
+/** Nhiệm vụ tự tạo chứa các việc đột xuất của một cán bộ khi không nêu nhiệm vụ nào. */
+export const AD_HOC_TASK_TITLE = 'Việc đột xuất';
+
+const assertDifficulty = (value: number | undefined) => {
+  if (!isAdHocLevel(value)) throw new BadRequestException('Mức độ khó của việc đột xuất là số nguyên từ 1 đến 4');
+  return value;
+};
+
+const cleanAdHocTitle = (title: string | undefined): string => {
+  const clean = (title ?? '').trim().replace(/\s+/g, ' ');
+  if (clean.length < 3 || clean.length > 200) throw new BadRequestException('Tên việc đột xuất dài từ 3 đến 200 ký tự');
+  return clean;
+};
 
 const assertContent = (note: string | null | undefined): void => {
   if (note && note.length > MAX_CONTENT_LENGTH) throw new BadRequestException(`Nội dung tối đa ${MAX_CONTENT_LENGTH} ký tự`);
@@ -159,36 +201,34 @@ export class TaskingService {
     return rows.sort((a, b) => a.title.localeCompare(b.title, 'vi'));
   }
 
-  /** Giao một việc trong danh mục, thuộc một nhiệm vụ, cho cấp dưới trực tiếp. */
+  /**
+   * Giao một việc cho cấp dưới trực tiếp, thuộc một nhiệm vụ: việc trong danh mục, hoặc việc đột xuất (`source: 'AD_HOC'`,
+   * ADR-046) không có trong danh mục, do người giao chọn mức độ khó.
+   */
   async assign(actor: Actor, input: AssignInput): Promise<AssignmentView> {
     const task = await this.requireTask(input.taskId);
     const assigneePersonId = task.assigneePersonId;
-    const confirmer = await this.confirmerOf(assigneePersonId);
+    const positionId = await this.resolveAssigneePosition(assigneePersonId, input.positionId, true);
+    const confirmer = await this.confirmerOf(assigneePersonId, positionId);
     this.assertActor(actor, confirmer, 'giao việc cho');
 
     assertQuantity(input.plannedQuantity, 'Số lượng giao');
     if (!isIsoDate(input.dueDate)) throw new BadRequestException('Hạn hoàn thành phải có dạng YYYY-MM-DD');
     const kinds = this.resolveKinds(input.periodMode, input.reportKinds);
     assertContent(input.note);
-    const people = await this.checkParticipants(assigneePersonId, input.approverPersonId, input.consultantPersonIds);
+    const people = await this.checkParticipants(assigneePersonId, input.approverPersonId, input.consultantPersonIds, positionId);
+    const okrKeyResult = await this.resolveKeyResult(assigneePersonId, input.keyResult);
 
     const current = await this.catalog.currentApproved();
     if (!current) throw new ConflictException('Chưa có danh mục sản phẩm công việc nào được phê duyệt');
-    const item = current.items.get(input.catalogItemCode);
-    if (!item) throw new NotFoundException(`Công việc ${input.catalogItemCode} không có trong danh mục đang hiệu lực`);
-    if (item.coefficient === null || item.coefficient <= 0) {
-      throw new ConflictException(`Công việc ${input.catalogItemCode} chưa có điểm chấm nên chưa giao được`);
-    }
-    const scope = { unitIds: item.unitIds ?? [], positionIds: item.positionIds ?? [] };
-    if (!isInScope(scope, await this.org.placementOf(assigneePersonId))) {
-      throw new ConflictException(`Công việc ${input.catalogItemCode} không thuộc phạm vi áp dụng của đơn vị, vị trí của người nhận`);
-    }
+    const picked = await this.pickItem(assigneePersonId, current, input, positionId);
 
     const created = await this.assignments.create({
       taskId: task.id,
       assigneePersonId,
+      positionId,
       assignerAccountId: actor.id,
-      catalogItemCode: input.catalogItemCode,
+      catalogItemCode: picked.code,
       catalogVersionId: current.versionId,
       plannedQuantity: input.plannedQuantity,
       dueDate: input.dueDate,
@@ -196,6 +236,9 @@ export class TaskingService {
       reportKinds: kinds,
       note: input.note?.trim() || null,
       approverPersonId: people.approverId,
+      okrKeyResult,
+      source: picked.source,
+      title: picked.title,
     });
     if (people.consultantIds.length > 0) await this.consultants.replace(created.id, people.consultantIds);
     await this.audit.record({
@@ -206,21 +249,286 @@ export class TaskingService {
       details: {
         taskId: task.id,
         assigneePersonId: created.assigneePersonId,
+        positionId,
         code: created.catalogItemCode,
+        source: created.source,
+        ...(created.title ? { title: created.title } : {}),
         plannedQuantity: created.plannedQuantity,
         dueDate: created.dueDate,
         periodMode: created.periodMode,
         reportKinds: created.reportKinds,
         approverPersonId: people.approverId,
         consultants: people.consultantIds.length,
+        okrKeyResult,
       },
     });
     const link = `/tasks?open=${created.id}`;
     const others = (ids: readonly (string | null)[]) => ids.filter((p) => p !== actor.personId && p !== assigneePersonId);
-    await this.notifier.notify([assigneePersonId], { type: 'TASK_ASSIGNED', title: `Bạn được giao việc: ${task.title}`, link });
+    await this.notifier.notify([assigneePersonId], { type: 'TASK_ASSIGNED', title: `Bạn được giao việc${created.source === 'AD_HOC' ? ' đột xuất' : ''}: ${task.title}`, link });
     await this.notifier.notify(others([people.approverId]), { type: 'TASK_ROLE', title: `Bạn được chỉ định duyệt kết quả việc: ${task.title}`, link });
     await this.notifier.notify(others(people.consultantIds), { type: 'TASK_ROLE', title: `Bạn được mời tham vấn việc: ${task.title}`, link });
     return this.view(created, [], people.approverId ?? confirmer, new Map(current.items), task, people.consultantIds, todayVietnam(this.clock.now()));
+  }
+
+  /**
+   * Chọn công việc của một lần giao: từ danh mục (phải có, có điểm chấm, đúng phạm vi áp dụng của người nhận) hoặc việc đột xuất
+   * (mã ảo theo mức độ khó). Dùng chung cho giao tay và sinh việc lặp.
+   */
+  private async pickItem(
+    assigneePersonId: string,
+    current: { versionId: string; items: Map<string, CatalogItemInfo> },
+    input: { source?: AssignmentSource; catalogItemCode?: string; title?: string; difficulty?: number },
+    positionId?: string | null,
+  ): Promise<{ code: string; source: AssignmentSource; title: string | null }> {
+    if (input.source === 'AD_HOC') {
+      return { code: adHocCode(assertDifficulty(input.difficulty)), source: 'AD_HOC', title: cleanAdHocTitle(input.title) };
+    }
+    if (input.source !== undefined && input.source !== 'CATALOG') throw new BadRequestException('Nguồn việc là CATALOG hoặc AD_HOC');
+    if (!input.catalogItemCode) throw new BadRequestException('Cần chọn công việc trong danh mục');
+    const item = current.items.get(input.catalogItemCode);
+    if (!item) throw new NotFoundException(`Công việc ${input.catalogItemCode} không có trong danh mục đang hiệu lực`);
+    if (item.coefficient === null || item.coefficient <= 0) {
+      throw new ConflictException(`Công việc ${input.catalogItemCode} chưa có điểm chấm nên chưa giao được`);
+    }
+    const scope = { unitIds: item.unitIds ?? [], positionIds: item.positionIds ?? [] };
+    if (!isInScope(scope, await this.org.placementOf(assigneePersonId, positionId))) {
+      throw new ConflictException(`Công việc ${input.catalogItemCode} không thuộc phạm vi áp dụng của đơn vị, vị trí của người nhận`);
+    }
+    return { code: input.catalogItemCode, source: 'CATALOG', title: null };
+  }
+
+  /**
+   * Cán bộ đề xuất một việc đột xuất cho chính mình (ADR-046). Việc ở trạng thái PROPOSED, chưa tính vào hồ sơ kỳ cho đến khi
+   * cấp trên trực tiếp duyệt và chọn mức độ khó. Gắn vào nhiệm vụ nêu ra (phải là của chính mình) hoặc nhiệm vụ "Việc đột xuất".
+   */
+  async propose(
+    actor: Actor,
+    input: { taskId?: string; title: string; plannedQuantity: number; dueDate: string; difficulty?: number; note?: string | null; positionId?: string | null },
+  ): Promise<AssignmentView> {
+    if (!actor.personId) throw new ForbiddenException('Tài khoản chưa gắn với cán bộ nên chưa thao tác được');
+    const positionId = await this.resolveAssigneePosition(actor.personId, input.positionId, false);
+    const confirmer = await this.confirmerOf(actor.personId, positionId);
+    if (confirmer === null) throw new ConflictException('Chưa có người giữ vị trí cấp trên để duyệt đề xuất');
+    assertQuantity(input.plannedQuantity, 'Số lượng');
+    if (!isIsoDate(input.dueDate)) throw new BadRequestException('Hạn hoàn thành phải có dạng YYYY-MM-DD');
+    assertContent(input.note);
+    const title = cleanAdHocTitle(input.title);
+    const level = input.difficulty === undefined ? 2 : assertDifficulty(input.difficulty);
+
+    let task: WorkTaskModel;
+    if (input.taskId) {
+      task = await this.requireTask(input.taskId);
+      if (task.assigneePersonId !== actor.personId) throw new ForbiddenException('Chỉ đề xuất được vào nhiệm vụ của chính mình');
+    } else {
+      task = await this.adHocTaskOf(actor.personId, actor.id);
+    }
+    const current = await this.catalog.currentApproved();
+    if (!current) throw new ConflictException('Chưa có danh mục sản phẩm công việc nào được phê duyệt');
+
+    const created = await this.assignments.create({
+      taskId: task.id,
+      assigneePersonId: actor.personId,
+      positionId,
+      assignerAccountId: null,
+      catalogItemCode: adHocCode(level),
+      catalogVersionId: current.versionId,
+      plannedQuantity: input.plannedQuantity,
+      dueDate: input.dueDate,
+      periodMode: 'AUTO',
+      reportKinds: [...REPORT_KINDS],
+      note: input.note?.trim() || null,
+      source: 'AD_HOC',
+      title,
+      status: 'PROPOSED',
+    });
+    await this.audit.record({
+      action: 'tasking.proposal.create',
+      outcome: 'SUCCESS',
+      targetType: 'work_assignment',
+      targetId: created.id,
+      details: { assigneePersonId: actor.personId, title, plannedQuantity: created.plannedQuantity, dueDate: created.dueDate, suggestedLevel: level },
+    });
+    await this.notifier.notify([confirmer], { type: 'TASK_PROPOSED', title: `Đề xuất việc đột xuất chờ bạn duyệt: ${title}`, link: `/tasks?open=${created.id}` });
+    return (await this.views([created]))[0];
+  }
+
+  /**
+   * Cấp trên trực tiếp duyệt đề xuất: chọn mức độ khó (hệ số quy đổi), có thể chỉnh số lượng và hạn; việc chuyển sang OPEN và người duyệt
+   * trở thành người giao.
+   */
+  async approveProposal(
+    actor: Actor,
+    id: string,
+    input: { difficulty: number; plannedQuantity?: number; dueDate?: string; note?: string | null },
+  ): Promise<AssignmentView> {
+    const assignment = await this.requireProposal(id);
+    this.assertActor(actor, await this.confirmerOf(assignment.assigneePersonId, assignment.positionId), 'duyệt đề xuất của');
+    const level = assertDifficulty(input.difficulty);
+    const patch: AssignmentPatch = { catalogItemCode: adHocCode(level), assignerAccountId: actor.id };
+    if (input.plannedQuantity !== undefined) {
+      assertQuantity(input.plannedQuantity, 'Số lượng');
+      patch.plannedQuantity = input.plannedQuantity;
+    }
+    if (input.dueDate !== undefined) {
+      if (!isIsoDate(input.dueDate)) throw new BadRequestException('Hạn hoàn thành phải có dạng YYYY-MM-DD');
+      patch.dueDate = input.dueDate;
+    }
+    if (input.note !== undefined) {
+      assertContent(input.note);
+      patch.note = input.note?.trim() || null;
+    }
+    await this.assignments.update(id, patch);
+    const updated = await this.assignments.setStatus(id, 'OPEN');
+    await this.audit.record({
+      action: 'tasking.proposal.approve',
+      outcome: 'SUCCESS',
+      targetType: 'work_assignment',
+      targetId: id,
+      details: {
+        assigneePersonId: assignment.assigneePersonId,
+        title: assignment.title,
+        level,
+        before: snapshot(assignment, ['plannedQuantity', 'dueDate', 'catalogItemCode']),
+        after: snapshot(updated, ['plannedQuantity', 'dueDate', 'catalogItemCode']),
+      },
+    });
+    await this.notifier.notify([assignment.assigneePersonId], {
+      type: 'TASK_PROPOSAL_DECIDED',
+      title: `Đề xuất được duyệt (mức ${level}): ${assignment.title ?? ''}`,
+      link: `/tasks?open=${id}`,
+    });
+    return (await this.views([updated]))[0];
+  }
+
+  /** Cấp trên trực tiếp từ chối đề xuất, nêu lý do; việc chuyển sang đã hủy. */
+  async rejectProposal(actor: Actor, id: string, reason: string): Promise<AssignmentView> {
+    const assignment = await this.requireProposal(id);
+    this.assertActor(actor, await this.confirmerOf(assignment.assigneePersonId, assignment.positionId), 'duyệt đề xuất của');
+    const note = reason?.trim() ?? '';
+    if (note.length < 3) throw new BadRequestException('Cần nêu lý do khi từ chối');
+    const updated = await this.assignments.setStatus(id, 'CANCELLED');
+    await this.audit.record({
+      action: 'tasking.proposal.reject',
+      outcome: 'SUCCESS',
+      targetType: 'work_assignment',
+      targetId: id,
+      details: { assigneePersonId: assignment.assigneePersonId, title: assignment.title, reason: note },
+    });
+    await this.notifier.notify([assignment.assigneePersonId], {
+      type: 'TASK_PROPOSAL_DECIDED',
+      title: `Đề xuất bị từ chối: ${assignment.title ?? ''} (${note})`.slice(0, 190),
+      link: `/tasks?open=${id}`,
+    });
+    return (await this.views([updated]))[0];
+  }
+
+  // ------------------------------------------------------------- dùng cho việc lặp định kỳ (RecurringService, ADR-046)
+
+  /** Người thao tác phải là cấp trên trực tiếp của người nhận (cùng quy tắc giao việc). */
+  async assertAssigner(actor: Actor, assigneePersonId: string): Promise<void> {
+    this.assertActor(actor, await this.confirmerOf(assigneePersonId), 'giao việc cho');
+  }
+
+  requireWorkTask(id: string): Promise<WorkTaskModel> {
+    return this.requireTask(id);
+  }
+
+  /** Người duyệt (cc) hợp lệ của người nhận; null nghĩa là cấp trên trực tiếp. */
+  async checkApprover(assigneePersonId: string, approverPersonId: string | null | undefined): Promise<string | null> {
+    return (await this.checkParticipants(assigneePersonId, approverPersonId, [])).approverId;
+  }
+
+  /** Kiểm tra công việc của một mẫu lặp theo danh mục đang hiệu lực (hoặc việc đột xuất) và trả về mã, nguồn, tên. */
+  async resolveItem(
+    assigneePersonId: string,
+    input: { source?: AssignmentSource; catalogItemCode?: string; title?: string; difficulty?: number },
+  ): Promise<{ code: string; source: AssignmentSource; title: string | null }> {
+    const current = await this.catalog.currentApproved();
+    if (!current) throw new ConflictException('Chưa có danh mục sản phẩm công việc nào được phê duyệt');
+    return this.pickItem(assigneePersonId, current, input);
+  }
+
+  /**
+   * Giao một việc theo mẫu lặp cho lần lặp `occurrence` (YYYY-MM-DD). Không có người thao tác nên không kiểm quyền (đã kiểm khi
+   * tạo mẫu); kiểm lại người nhận còn được quản lý, công việc còn trong danh mục và đúng phạm vi. Sinh trùng bị CSDL chặn
+   * (cặp mẫu, ngày lặp là duy nhất).
+   */
+  async spawn(template: RecurringTemplateModel, occurrence: string, dueDate: string): Promise<AssignmentModel> {
+    const assigneePersonId = template.assigneePersonId;
+    if (!(await this.org.activePersonIds([assigneePersonId])).has(assigneePersonId)) throw new ConflictException('Người nhận việc đã ngừng quản lý');
+    const task = await this.requireTask(template.taskId);
+    const current = await this.catalog.currentApproved();
+    if (!current) throw new ConflictException('Chưa có danh mục sản phẩm công việc nào được phê duyệt');
+    const positionId = await this.resolveAssigneePosition(assigneePersonId, null, false);
+    const picked = await this.pickItem(assigneePersonId, current, {
+      source: template.source,
+      catalogItemCode: template.catalogItemCode,
+      title: template.title ?? undefined,
+      difficulty: adHocLevelOf(template.catalogItemCode) ?? undefined,
+    }, positionId);
+    const approverId = template.approverPersonId && (await this.org.superiorHolders(assigneePersonId, positionId)).includes(template.approverPersonId) ? template.approverPersonId : null;
+
+    const created = await this.assignments.create({
+      taskId: task.id,
+      assigneePersonId,
+      positionId,
+      assignerAccountId: template.createdBy,
+      catalogItemCode: picked.code,
+      catalogVersionId: current.versionId,
+      plannedQuantity: template.plannedQuantity,
+      dueDate,
+      periodMode: template.periodMode,
+      reportKinds: template.reportKinds,
+      note: template.note,
+      approverPersonId: approverId,
+      source: picked.source,
+      title: picked.title,
+      recurringTemplateId: template.id,
+      recurringKey: occurrence,
+    });
+    await this.audit.record({
+      action: 'tasking.assignment.create',
+      outcome: 'SUCCESS',
+      targetType: 'work_assignment',
+      targetId: created.id,
+      actor: null,
+      details: {
+        taskId: task.id,
+        assigneePersonId,
+        code: created.catalogItemCode,
+        source: created.source,
+        ...(created.title ? { title: created.title } : {}),
+        plannedQuantity: created.plannedQuantity,
+        dueDate,
+        recurringTemplateId: template.id,
+        occurrence,
+        generated: true,
+      },
+    });
+    await this.notifier.notify([assigneePersonId], { type: 'TASK_ASSIGNED', title: `Việc định kỳ mới: ${picked.title ?? task.title}`, link: `/tasks?open=${created.id}` });
+    await this.notifier.notify([approverId].filter((p) => p !== assigneePersonId), { type: 'TASK_ROLE', title: `Bạn được chỉ định duyệt kết quả việc: ${task.title}`, link: `/tasks?open=${created.id}` });
+    return created;
+  }
+
+  private async requireProposal(id: string): Promise<AssignmentModel> {
+    const assignment = await this.require(id);
+    if (assignment.status !== 'PROPOSED') throw new ConflictException('Việc này không phải đề xuất đang chờ duyệt');
+    return assignment;
+  }
+
+  /** Nhiệm vụ "Việc đột xuất" của cán bộ: dùng lại nếu có, không thì tạo (do chính người thao tác đứng tên). */
+  private async adHocTaskOf(personId: string, accountId: string): Promise<WorkTaskModel> {
+    const found = await this.workTasks.findByAssigneeAndTitle(personId, AD_HOC_TASK_TITLE);
+    if (found) return found;
+    const created = await this.workTasks.create({ assigneePersonId: personId, title: AD_HOC_TASK_TITLE, description: 'Việc phát sinh ngoài kế hoạch (ADR-046)', createdByAccountId: accountId });
+    await this.audit.record({
+      action: 'tasking.task.create',
+      outcome: 'SUCCESS',
+      targetType: 'work_task',
+      targetId: created.id,
+      details: { assigneePersonId: personId, title: AD_HOC_TASK_TITLE, auto: true },
+    });
+    return created;
   }
 
   /** Danh sách việc: của chính mình, của cấp dưới (mọi cấp), hoặc toàn bộ (cần quyền xem toàn bộ). */
@@ -249,6 +557,7 @@ export class TaskingService {
   async report(actor: Actor, assignmentId: string, input: { quantity: number; completedOn: string; evidence?: string | null }): Promise<ProgressModel> {
     const assignment = await this.require(assignmentId);
     this.assertSubject(actor, assignment);
+    if (assignment.status === 'PROPOSED') throw new ConflictException('Đề xuất chưa được duyệt, chưa báo cáo được');
     if (assignment.status !== 'OPEN') throw new ConflictException('Việc đã bị hủy, không báo cáo thêm được');
     assertQuantity(input.quantity, 'Số lượng hoàn thành');
     if (!isIsoDate(input.completedOn)) throw new BadRequestException('Ngày hoàn thành phải có dạng YYYY-MM-DD');
@@ -314,7 +623,7 @@ export class TaskingService {
   /** Hủy việc giao sai. Không hủy được nếu đã có kết quả được xác nhận. */
   async cancel(actor: Actor, id: string): Promise<AssignmentModel> {
     const assignment = await this.require(id);
-    this.assertActor(actor, await this.confirmerOf(assignment.assigneePersonId), 'hủy việc của');
+    this.assertActor(actor, await this.confirmerOf(assignment.assigneePersonId, assignment.positionId), 'hủy việc của');
     if (assignment.status === 'CANCELLED') return assignment;
     const progress = await this.progress.findByAssignments([id]);
     if (progress.some((p) => p.status === 'CONFIRMED')) throw new ConflictException('Việc đã có kết quả được xác nhận nên không hủy được');
@@ -348,6 +657,7 @@ export class TaskingService {
         assignmentId: a.id,
         taskTitle: titles.get(a.taskId) ?? '',
         personId: a.assigneePersonId,
+        positionId: a.positionId,
         catalogItemCode: a.catalogItemCode,
         plannedQuantity: a.plannedQuantity,
         evidence: evidence ? evidence.slice(0, 2000) : null,
@@ -368,8 +678,43 @@ export class TaskingService {
   }
 
   /** Cấp trên trực tiếp: người đầu tiên giữ vị trí cấp trên (bỏ vị trí trống). */
-  private async confirmerOf(personId: string): Promise<string | null> {
-    return (await this.org.superiorHolders(personId))[0] ?? null;
+  /**
+   * OKR của vị trí cán bộ: chính họ, các cấp trên của họ, hoặc người xem toàn bộ (ADR-034).
+   * Dùng để người giao chọn kết quả then chốt khi giao việc và để cán bộ xem định hướng của mình.
+   */
+  async okrOf(actor: Actor, personId: string, canReadAll: boolean): Promise<ParsedOkr | null> {
+    if (!actor.personId) throw new ForbiddenException('Tài khoản chưa gắn với cán bộ nên chưa thao tác được');
+    const allowed = canReadAll || actor.personId === personId || (await this.org.superiorHolders(personId)).includes(actor.personId);
+    if (!allowed) throw new ForbiddenException('Bạn không xem được OKR của cán bộ này');
+    return this.org.okrOf(personId);
+  }
+
+  /** Đổi mã kết quả then chốt người giao chọn thành nhãn đầy đủ; mã phải có trong OKR của người nhận. */
+  private async resolveKeyResult(assigneePersonId: string, code: string | null | undefined): Promise<string | null> {
+    const wanted = code?.trim();
+    if (!wanted) return null;
+    const found = (await this.org.okrOf(assigneePersonId))?.keyResults.find((k) => k.code === wanted);
+    if (!found) throw new BadRequestException(`Kết quả then chốt ${wanted} không có trong OKR của người nhận việc`);
+    return `${found.code}: ${found.text}`;
+  }
+
+  private async confirmerOf(personId: string, positionId?: string | null): Promise<string | null> {
+    return (await this.org.superiorHolders(personId, positionId))[0] ?? null;
+  }
+
+  /**
+   * Vị trí mà một việc được giao cho. Nêu `requested`: phải là vị trí người nhận đang giữ. Không nêu: người chỉ giữ một vị trí
+   * thì lấy vị trí đó; người kiêm nhiệm thì (khi `strict`, giao tay) bắt buộc chọn, còn lại (đề xuất, việc lặp) lấy vị trí chính.
+   */
+  private async resolveAssigneePosition(personId: string, requested: string | null | undefined, strict: boolean): Promise<string | null> {
+    const held = await this.org.placementsOf(personId);
+    if (requested) {
+      if (!held.some((h) => h.positionId === requested)) throw new ConflictException('Người nhận việc hiện không giữ vị trí này');
+      return requested;
+    }
+    if (held.length === 0) return null;
+    if (strict && held.length > 1) throw new BadRequestException('Người nhận việc đang kiêm nhiệm nhiều vị trí: cần chọn việc này thuộc vị trí nào');
+    return (held.find((h) => h.kind === 'PRIMARY') ?? held[0]).positionId;
   }
 
   private assertActor(actor: Actor, expectedPersonId: string | null, verb: string): void {
@@ -388,7 +733,7 @@ export class TaskingService {
     if (assignment.assignerAccountId === actor.id) return;
     if (!actor.personId) throw new ForbiddenException('Bạn không có quyền xem việc này');
     if (actor.personId === assignment.assigneePersonId || actor.personId === assignment.approverPersonId) return;
-    if ((await this.org.superiorHolders(assignment.assigneePersonId)).includes(actor.personId)) return;
+    if ((await this.org.superiorHolders(assignment.assigneePersonId, assignment.positionId)).includes(actor.personId)) return;
     if ((await this.consultants.findByAssignments([assignment.id])).some((c) => c.personId === actor.personId)) return;
     throw new ForbiddenException('Bạn không có quyền xem việc này');
   }
@@ -398,7 +743,7 @@ export class TaskingService {
    * tiếp khi không chỉ định), người tham vấn. Không có vai trò nào thì không phải thành viên.
    */
   async membership(actor: Actor, assignment: AssignmentModel): Promise<{ assigner: boolean; assignee: boolean; approver: boolean; consultant: boolean }> {
-    const direct = await this.confirmerOf(assignment.assigneePersonId);
+    const direct = await this.confirmerOf(assignment.assigneePersonId, assignment.positionId);
     const approverId = assignment.approverPersonId ?? direct;
     const consultant = actor.personId ? (await this.consultants.findByAssignments([assignment.id])).some((c) => c.personId === actor.personId) : false;
     return {
@@ -439,7 +784,7 @@ export class TaskingService {
   /** Những người liên quan đến việc (người nhận, người duyệt, cấp trên trực tiếp, người tham vấn), trừ `except`. Dùng để gửi thông báo. */
   async participantsOf(assignment: AssignmentModel, except: string | null): Promise<string[]> {
     const consultants = (await this.consultants.findByAssignments([assignment.id])).map((c) => c.personId);
-    const all = [assignment.assigneePersonId, await this.approverOf(assignment), await this.confirmerOf(assignment.assigneePersonId), ...consultants];
+    const all = [assignment.assigneePersonId, await this.approverOf(assignment), await this.confirmerOf(assignment.assigneePersonId, assignment.positionId), ...consultants];
     return [...new Set(all.filter((p): p is string => p !== null && p !== except))];
   }
 
@@ -455,7 +800,7 @@ export class TaskingService {
 
   /** Người duyệt thực tế: người duyệt (cc) nếu có, không thì cấp trên trực tiếp. */
   private async approverOf(assignment: AssignmentModel): Promise<string | null> {
-    return assignment.approverPersonId ?? (await this.confirmerOf(assignment.assigneePersonId));
+    return assignment.approverPersonId ?? (await this.confirmerOf(assignment.assigneePersonId, assignment.positionId));
   }
 
   /** Người duyệt phải là cấp trên của người nhận; người tham vấn là cán bộ đang quản lý, khác người nhận, tối đa 10. */
@@ -463,10 +808,11 @@ export class TaskingService {
     assigneePersonId: string,
     approver: string | null | undefined,
     consultants: readonly string[] | undefined,
+    positionId?: string | null,
   ): Promise<{ approverId: string | null; consultantIds: string[] }> {
     let approverId: string | null = null;
     if (approver) {
-      if (!(await this.org.superiorHolders(assigneePersonId)).includes(approver)) {
+      if (!(await this.org.superiorHolders(assigneePersonId, positionId)).includes(approver)) {
         throw new BadRequestException('Người duyệt (cc) phải là một cấp trên của người nhận việc');
       }
       approverId = approver;
@@ -486,7 +832,7 @@ export class TaskingService {
   async update(
     actor: Actor,
     id: string,
-    patch: { note?: string | null; approverPersonId?: string | null; consultantPersonIds?: string[] },
+    patch: { note?: string | null; approverPersonId?: string | null; consultantPersonIds?: string[]; keyResult?: string | null },
   ): Promise<AssignmentView> {
     const assignment = await this.require(id);
     const roles = await this.membership(actor, assignment);
@@ -494,14 +840,16 @@ export class TaskingService {
     if (assignment.status !== 'OPEN') throw new ConflictException('Việc đã bị hủy, không sửa được');
     if (patch.note !== undefined) assertContent(patch.note);
 
-    const next: { note?: string | null; approverPersonId?: string | null } = {};
+    const next: { note?: string | null; approverPersonId?: string | null; okrKeyResult?: string | null } = {};
     if (patch.note !== undefined) next.note = patch.note?.trim() || null;
+    if (patch.keyResult !== undefined) next.okrKeyResult = await this.resolveKeyResult(assignment.assigneePersonId, patch.keyResult);
     let consultantIds: string[] | undefined;
     if (patch.approverPersonId !== undefined || patch.consultantPersonIds !== undefined) {
       const people = await this.checkParticipants(
         assignment.assigneePersonId,
         patch.approverPersonId === undefined ? assignment.approverPersonId : patch.approverPersonId,
         patch.consultantPersonIds ?? (await this.consultants.findByAssignments([id])).map((c) => c.personId),
+        assignment.positionId,
       );
       if (patch.approverPersonId !== undefined) next.approverPersonId = people.approverId;
       if (patch.consultantPersonIds !== undefined) consultantIds = people.consultantIds;
@@ -515,7 +863,10 @@ export class TaskingService {
       targetId: id,
       details: {
         changed: Object.keys(patch),
+        before: snapshot(assignment, ['note', 'approverPersonId', 'okrKeyResult'].filter((k) => k in next)),
+        after: snapshot(updated, ['note', 'approverPersonId', 'okrKeyResult'].filter((k) => k in next)),
         approverPersonId: updated.approverPersonId,
+        ...(patch.keyResult !== undefined ? { okrKeyResult: updated.okrKeyResult } : {}),
         ...(consultantIds ? { consultants: consultantIds.length } : {}),
       },
     });
@@ -531,12 +882,21 @@ export class TaskingService {
     const pageSize = query.pageSize ?? 20;
     if (!Number.isInteger(page) || page < 1) throw new BadRequestException('Trang phải là số nguyên từ 1');
     if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) throw new BadRequestException('Cỡ trang từ 1 đến 100');
+    const { filtered, matched } = await this.select(actor, query, canReadAll);
+    const stateCounts = Object.fromEntries(ASSIGNMENT_STATES.map((s) => [s, 0])) as Record<AssignmentState, number>;
+    for (const v of filtered) stateCounts[v.state] += 1;
+    return { items: matched.slice((page - 1) * pageSize, page * pageSize), total: matched.length, page, pageSize, stateCounts };
+  }
+
+  /** Lọc và sắp xếp việc trong phạm vi: `filtered` chưa lọc theo trạng thái (để đếm), `matched` đã lọc theo trạng thái và sắp xếp. */
+  private async select(actor: Actor, query: SearchQuery, canReadAll: boolean): Promise<{ filtered: AssignmentView[]; matched: AssignmentView[] }> {
     for (const d of [query.dueFrom, query.dueTo, query.createdFrom, query.createdTo]) {
       if (d !== undefined && !isIsoDate(d)) throw new BadRequestException('Ngày lọc có dạng YYYY-MM-DD');
     }
     for (const s of query.states ?? []) {
       if (!ASSIGNMENT_STATES.includes(s)) throw new BadRequestException(`Trạng thái không hợp lệ: ${s}`);
     }
+    if (query.kind !== undefined && !WORK_KINDS.includes(query.kind)) throw new BadRequestException('Loại việc là CATALOG, AD_HOC hoặc RECURRING');
 
     const base = await this.views(await this.rowsOfScope(actor, query.scope, canReadAll));
     // Mỗi từ khóa phải xuất hiện (thứ tự bất kỳ, bỏ dấu câu): "van thu luu tru" khớp "Văn thư, lưu trữ".
@@ -544,6 +904,7 @@ export class TaskingService {
     const filtered = base.filter((v) => {
       const a = v.assignment;
       if (query.assigneePersonId && a.assigneePersonId !== query.assigneePersonId) return false;
+      if (query.kind && workKindOf(a) !== query.kind) return false;
       if (query.dueFrom && a.dueDate < query.dueFrom) return false;
       if (query.dueTo && a.dueDate > query.dueTo) return false;
       const created = todayVietnam(a.createdAt);
@@ -556,9 +917,6 @@ export class TaskingService {
       return true;
     });
 
-    const stateCounts = Object.fromEntries(ASSIGNMENT_STATES.map((s) => [s, 0])) as Record<AssignmentState, number>;
-    for (const v of filtered) stateCounts[v.state] += 1;
-
     const states = query.states ?? [];
     const matched = states.length > 0 ? filtered.filter((v) => states.includes(v.state)) : filtered;
     const sort = query.sort ?? 'due';
@@ -569,7 +927,41 @@ export class TaskingService {
           ? y.assignment.dueDate.localeCompare(x.assignment.dueDate)
           : x.assignment.dueDate.localeCompare(y.assignment.dueDate),
     );
-    return { items: matched.slice((page - 1) * pageSize, page * pageSize), total: matched.length, page, pageSize, stateCounts };
+    return { filtered, matched };
+  }
+
+  /** Việc theo bộ lọc của danh sách (bỏ phân trang), kèm tên và vị trí; tối đa `MAX_EXPORT_ROWS`. */
+  private async exportViews(actor: Actor, query: SearchQuery, canReadAll: boolean, limit: number): Promise<{ views: AssignmentView[]; truncated: boolean }> {
+    const { matched } = await this.select(actor, { ...query, scope: query.scope ?? 'mine' }, canReadAll);
+    return { views: matched.slice(0, limit), truncated: matched.length > limit };
+  }
+
+  /** Thống kê (trạng thái, tỷ lệ chậm, chưa đạt, theo đơn vị) trên các việc theo bộ lọc (PLAN-A A6.4). */
+  async statistics(actor: Actor, query: SearchQuery, canReadAll: boolean): Promise<TaskStatistics> {
+    const { filtered } = await this.select(actor, { ...query, scope: query.scope ?? 'mine' }, canReadAll);
+    const states = query.states ?? [];
+    return taskStatistics(states.length > 0 ? filtered.filter((v) => states.includes(v.state)) : filtered, await this.org.lookup());
+  }
+
+  /** Xuất danh sách việc theo bộ lọc ra Excel hoặc PDF, kèm thống kê. Ghi nhật ký (A6.5). */
+  async exportAssignments(actor: Actor, query: SearchQuery, canReadAll: boolean, format: TableFormat): Promise<ExportedTable> {
+    const { views, truncated } = await this.exportViews(actor, query, canReadAll, MAX_EXPORT_ROWS[format]);
+    const scopeText: Record<SearchScope, string> = { mine: 'Việc của tôi', team: 'Việc của cấp dưới', all: 'Tất cả', consulted: 'Được tham vấn', approving: 'Chờ tôi duyệt', assigned: 'Tôi đã giao' };
+    const now = this.clock.now();
+    const info: [string, string][] = [['Phạm vi', scopeText[query.scope ?? 'mine']]];
+    if (query.q) info.push(['Từ khóa', query.q]);
+    if (query.kind) info.push(['Loại việc', { CATALOG: 'Giao từ danh mục', AD_HOC: 'Đột xuất', RECURRING: 'Định kỳ' }[query.kind]]);
+    if (query.states?.length) info.push(['Trạng thái', query.states.join(', ')]);
+    if (query.dueFrom || query.dueTo) info.push(['Hạn', `${query.dueFrom ?? '…'} đến ${query.dueTo ?? '…'}`]);
+    if (truncated) info.push(['Lưu ý', `Chỉ xuất ${views.length} việc đầu tiên; hãy thu hẹp bộ lọc để xuất đủ.`]);
+    const file = await buildExportFile('viec-duoc-giao', buildTaskExport(views, await this.org.lookup(), info, now), format);
+    await this.audit.record({
+      action: 'tasking.export',
+      outcome: 'SUCCESS',
+      targetType: 'work_assignment',
+      details: { format, scope: query.scope ?? 'mine', rows: views.length, truncated, bytes: file.buffer.length, q: query.q, states: query.states, dueFrom: query.dueFrom, dueTo: query.dueTo },
+    });
+    return file;
   }
 
   private async rowsOfScope(actor: Actor, scope: SearchScope, canReadAll: boolean): Promise<AssignmentModel[]> {
@@ -619,12 +1011,13 @@ export class TaskingService {
     const out: AssignmentView[] = [];
     for (const a of rows) {
       if (!versions.has(a.catalogVersionId)) versions.set(a.catalogVersionId, await this.catalog.itemsOf(a.catalogVersionId));
-      if (!confirmers.has(a.assigneePersonId)) confirmers.set(a.assigneePersonId, await this.confirmerOf(a.assigneePersonId));
+      const confirmerKey = `${a.assigneePersonId}|${a.positionId ?? ''}`;
+      if (!confirmers.has(confirmerKey)) confirmers.set(confirmerKey, await this.confirmerOf(a.assigneePersonId, a.positionId));
       out.push(
         this.view(
           a,
           progress.filter((p) => p.assignmentId === a.id),
-          a.approverPersonId ?? confirmers.get(a.assigneePersonId) ?? null,
+          a.approverPersonId ?? confirmers.get(confirmerKey) ?? null,
           versions.get(a.catalogVersionId) ?? new Map(),
           taskById.get(a.taskId),
           consultantRows.filter((c) => c.assignmentId === a.id).map((c) => c.personId),
@@ -646,11 +1039,13 @@ export class TaskingService {
   ): AssignmentView {
     const item = items.get(assignment.catalogItemCode);
     const summary = summarize(assignment, progress);
+    const adHoc = assignment.source === 'AD_HOC';
     return {
       assignment,
       task: { id: assignment.taskId, title: task?.title ?? '' },
-      itemName: item?.name ?? assignment.catalogItemCode,
-      coefficient: item?.coefficient ?? null,
+      itemName: adHoc ? (assignment.title ?? adHocLabel(assignment.catalogItemCode) ?? assignment.catalogItemCode) : (item?.name ?? assignment.catalogItemCode),
+      coefficient: adHoc ? adHocCoefficient(assignment.catalogItemCode) : (item?.coefficient ?? null),
+      adHocLevel: adHoc ? adHocLevelOf(assignment.catalogItemCode) : null,
       progress: [...progress].sort((a, b) => a.completedOn.localeCompare(b.completedOn)),
       summary,
       confirmerPersonId,
@@ -659,4 +1054,9 @@ export class TaskingService {
       state: stateOf(assignment, summary, today),
     };
   }
+}
+
+/** Loại việc để lọc: việc do mẫu lặp sinh ra là RECURRING dù giao từ danh mục hay đột xuất. */
+export function workKindOf(a: Pick<AssignmentModel, 'source' | 'recurringTemplateId'>): WorkKind {
+  return a.recurringTemplateId ? 'RECURRING' : a.source === 'AD_HOC' ? 'AD_HOC' : 'CATALOG';
 }

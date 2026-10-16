@@ -1,9 +1,9 @@
 import { Test } from '@nestjs/testing';
 import { Clock } from '../../../../common/clock.js';
 import { AuditService } from '../../../security/index.js';
-import type { PeriodReport, ReportPeriod, ReportRating, ReportRow, ReportStatus } from '../report.model.js';
-import { EvaluationSource, OrgLookup, ReportRenderer } from '../report.ports.js';
-import type { ReportActor, SourceEvaluation } from '../report.ports.js';
+import type { PeriodReport, ReportPeriod, ReportRating, ReportRow, ReportStatus, UnitReport } from '../report.model.js';
+import { EvaluationSource, OrgLookup, ReportRenderer, UnitEvaluationSource } from '../report.ports.js';
+import type { ReportActor, SourceEvaluation, SourceUnitEvaluation } from '../report.ports.js';
 import { ReportService } from '../report.service.js';
 import { buildPeriodReport } from '../report-builder.js';
 
@@ -65,6 +65,15 @@ export class FakeSource extends EvaluationSource {
   }
 }
 
+export class FakeUnitSource extends UnitEvaluationSource {
+  records: SourceUnitEvaluation[] = [];
+  calls: { actor: ReportActor; periodId: string; readAll: boolean }[] = [];
+  async list(actor: ReportActor, periodId: string, readAll: boolean) {
+    this.calls.push({ actor, periodId, readAll });
+    return this.records;
+  }
+}
+
 export class FakeLookup extends OrgLookup {
   people = new Map<string, { fullName: string }>();
   places = new Map<string, { title: string; level: number; unitCode: string; unitName: string }>();
@@ -83,6 +92,9 @@ export class FakeRenderer extends ReportRenderer {
   async renderPdf(r: PeriodReport) {
     return Buffer.from(`pdf:${r.rows.length}`);
   }
+  async renderUnitExcel(r: UnitReport) {
+    return Buffer.from(`unit-xlsx:${r.rows.length}`);
+  }
   async renderDraftDocx(d: { title: string }) {
     return Buffer.from(`docx:${d.title}`);
   }
@@ -92,6 +104,7 @@ export const actor: ReportActor = { id: 'acc-1', username: 'nguoi-xem', personId
 
 export async function buildReportService() {
   const source = new FakeSource();
+  const unitSource = new FakeUnitSource();
   const lookup = new FakeLookup();
   const audit: { action: string; details?: Record<string, unknown> }[] = [];
   lookup.people.set('p-a', { fullName: 'Nguyễn Văn A' });
@@ -106,11 +119,12 @@ export async function buildReportService() {
     providers: [
       ReportService,
       { provide: EvaluationSource, useValue: source },
+      { provide: UnitEvaluationSource, useValue: unitSource },
       { provide: OrgLookup, useValue: lookup },
       { provide: ReportRenderer, useValue: new FakeRenderer() },
       { provide: Clock, useValue: { now: () => new Date('2026-10-03T08:00:00Z') } },
       { provide: AuditService, useValue: { record: async (e: { action: string }) => void audit.push(e) } },
     ],
   }).compile();
-  return { service: moduleRef.get(ReportService), source, lookup, audit };
+  return { service: moduleRef.get(ReportService), source, unitSource, lookup, audit };
 }

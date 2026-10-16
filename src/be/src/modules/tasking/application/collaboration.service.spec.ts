@@ -102,7 +102,7 @@ describe('TaskingService: theo dõi việc có lọc và phân trang (ADR-024 m�
     await makeMany();
     const r = await h.service.search(actorOf('staff'), { scope: 'mine' }, false);
     expect(r.total).toBe(4);
-    expect(r.stateCounts).toEqual({ IN_PROGRESS: 1, PENDING_CONFIRM: 1, OVERDUE: 1, DONE: 0, CANCELLED: 1 });
+    expect(r.stateCounts).toEqual({ PROPOSED: 0, IN_PROGRESS: 1, PENDING_CONFIRM: 1, OVERDUE: 1, DONE: 0, CANCELLED: 1 });
   });
 
   it('lọc theo trạng thái (nhiều trạng thái), từ khóa không dấu, hạn, ngày giao', async () => {

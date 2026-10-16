@@ -30,7 +30,11 @@ export interface OrgPosition {
   /** Giữ vị trí này là cán bộ lãnh đạo, quản lý (ADR-022). */
   isLeader: boolean;
   reportsToPositionId: string | null;
-  holder: { personId: string; fullName: string } | null;
+  /** Xóa mềm (PLAN-A A1): vị trí ngừng sử dụng chỉ có khi lấy kèm `includeInactive`. */
+  status: 'ACTIVE' | 'INACTIVE';
+  inactiveReason: string | null;
+  /** `kind`: giữ vị trí này là vị trí chính hay kiêm nhiệm (ADR-047). */
+  holder: { personId: string; fullName: string; kind: AssignmentKind } | null;
 }
 
 export interface OrgUnit {
@@ -39,6 +43,8 @@ export interface OrgUnit {
   name: string;
   type: 'BAN' | 'PHONG';
   parentId: string | null;
+  status: 'ACTIVE' | 'INACTIVE';
+  inactiveReason: string | null;
   positions: OrgPosition[];
 }
 
@@ -118,21 +124,37 @@ export interface TaskFilePage {
   page: number;
   pageSize: number;
 }
-export const fetchOrgTree = () => serverFetch<OrgUnit[]>('/org/tree');
+/** `includeInactive`: lấy cả đơn vị và vị trí đã ngừng sử dụng (trang quản lý). Mặc định chỉ lấy đang hoạt động. */
+export const fetchOrgTree = (includeInactive = false) => serverFetch<OrgUnit[]>(`/org/tree${includeInactive ? '?includeInactive=true' : ''}`);
+
+/** Hạn hoàn thành đánh giá năm (ADR-038). */
+export interface Deadline {
+  date: string;
+  extended: boolean;
+  daysLeft: number;
+  overdue: boolean;
+  reminder: boolean;
+}
 
 export interface Period {
   id: string;
   /** Phiên bản danh mục đã phê duyệt dùng cho kỳ này. */
   catalogVersionId?: string;
   type: string;
+  year?: number;
   label: string;
   startDate: string;
   endDate: string;
   status: string;
+  /** Chỉ kỳ năm có hạn. */
+  deadline?: Deadline | null;
 }
 
 export interface Stats {
+  /** Số hồ sơ (phiếu); cán bộ kiêm nhiệm có một phiếu cho mỗi vị trí. */
   evaluations: number;
+  /** Số cán bộ khác nhau có hồ sơ (loại trùng người kiêm nhiệm). */
+  people: number;
   approved: number;
   pendingApproval: number;
   inProgress: number;
@@ -146,6 +168,7 @@ export interface Stats {
 
 export interface ReportRow {
   evaluationId: string;
+  personId: string;
   fullName: string;
   positionTitle: string;
   unitName: string;
@@ -199,7 +222,7 @@ export interface NotificationPage {
 }
 
 export interface Draft {
-  kind: 'REPORT' | 'DECISION';
+  kind: 'REPORT' | 'DECISION' | 'NOTICE';
   title: string;
   body: string;
   disclaimer: string;
@@ -213,6 +236,8 @@ export interface EvaluationSummary {
   id: string;
   periodId: string;
   personId: string;
+  /** Vị trí của phiếu: cán bộ kiêm nhiệm có một phiếu riêng cho mỗi vị trí (ADR-047). */
+  positionId: string;
   status: EvaluationStatus;
   totalScore: number | null;
   rating: RatingCode | null;
@@ -259,6 +284,8 @@ export interface EvaluationDetail {
     reviewComment: string | null;
     approveComment: string | null;
     returnReason: string | null;
+    /** Hồ sơ năm đóng là "không xếp loại" (ADR-039): lý do. */
+    notRatedReason: string | null;
     resultScore: number | null;
     leadership: Leadership | null;
   };
@@ -269,8 +296,69 @@ export interface EvaluationDetail {
   approverPersonId: string | null;
   /** Cán bộ lãnh đạo, quản lý được chấm thêm tiêu chí D. */
   isLeader: boolean;
-  leadershipSuggestion: { unitResult: number | null } | null;
+  leadershipSuggestion: { unitResult: number | null; solidarity: number | null; solidarityReason: string | null } | null;
+  /** Kỳ năm: điểm các tháng đã phê duyệt và trung bình (ADR-035); null với kỳ khác. */
+  yearAverage: YearAverage | null;
   warnings: string[];
+}
+
+export interface MonthScore {
+  month: number;
+  label: string;
+  generalScore: number;
+  resultScore: number;
+  totalScore: number;
+}
+
+/** Trung bình một quý hoặc 6 tháng đầu năm, chỉ để theo dõi (ADR-039). */
+export interface PeriodAverage {
+  key: 'Q1' | 'Q2' | 'Q3' | 'Q4' | 'H1';
+  label: string;
+  span: number[];
+  approved: number;
+  missing: number[];
+  exempt: number[];
+  totalScore: number | null;
+  rating: RatingCode | null;
+  complete: boolean;
+}
+
+export interface YearAverage {
+  months: MonthScore[];
+  missing: number[];
+  /** Tháng nghỉ có căn cứ, không tính vào trung bình. */
+  exempt: number[];
+  enough: boolean;
+  generalScore: number | null;
+  resultScore: number | null;
+  totalScore: number | null;
+  rating: RatingCode | null;
+  periods: PeriodAverage[];
+}
+
+export type LeaveReason = 'OM' | 'THAI_SAN' | 'KHONG_LUONG' | 'KHAC';
+export interface LeaveMonth {
+  month: number;
+  reason: LeaveReason;
+  note: string | null;
+}
+export const fetchComplaints = (evaluationId: string) => serverFetch<UnitComplaint[]>(`/unit-complaint/evaluation/${evaluationId}`);
+export const fetchLeave = (personId: string, year: number) => serverFetch<LeaveMonth[]>(`/evaluation/persons/${personId}/leave?year=${year}`);
+
+export type ComplaintKind = 'KHIEU_NAI' | 'TO_CAO' | 'PHAN_ANH' | 'MAT_DOAN_KET';
+export type ComplaintStatus = 'RECEIVED' | 'VERIFYING' | 'CLOSED';
+export interface UnitComplaint {
+  id: string;
+  kind: ComplaintKind;
+  content: string;
+  source: string | null;
+  receivedOn: string;
+  status: ComplaintStatus;
+  assignee: string | null;
+  verifyDue: string | null;
+  outcome: 'SUBSTANTIATED' | 'UNFOUNDED' | null;
+  conclusion: string | null;
+  closedAt: string | null;
 }
 
 export interface CatalogVersion {
@@ -292,7 +380,11 @@ export interface CatalogTask {
   groupCode: string;
   name: string;
   description: string | null;
+  /** Số công việc đang hoạt động (không tính công việc đã ngừng sử dụng). */
   itemCount: number;
+  /** Xóa mềm (PLAN-A A1.6): nhiệm vụ ngừng sử dụng vẫn còn trong danh mục. */
+  status: 'ACTIVE' | 'INACTIVE';
+  inactiveReason: string | null;
 }
 
 export interface CatalogItem {
@@ -311,6 +403,8 @@ export interface CatalogItem {
   explanation: string | null;
   coefficient: number | null;
   needsScoring: boolean;
+  status: 'ACTIVE' | 'INACTIVE';
+  inactiveReason: string | null;
   /** Phạm vi áp dụng (ADR-021): rỗng cả hai là việc chung. */
   unitIds: string[];
   positionIds: string[];
@@ -376,18 +470,24 @@ export interface Position {
   reportsToPositionId: string | null;
   duties: string | null;
   referenceOkr: string | null;
+  status: 'ACTIVE' | 'INACTIVE';
+  inactiveReason: string | null;
 }
+
+/** PRIMARY: vị trí chính; CONCURRENT: kiêm nhiệm (ADR-047). */
+export type AssignmentKind = 'PRIMARY' | 'CONCURRENT';
 
 export interface Assignment {
   id: string;
   personId: string;
   positionId: string;
+  kind: AssignmentKind;
   validFrom: string;
   validTo: string | null;
 }
 
 export const fetchPersons = () => serverFetch<Person[]>('/persons');
-export const fetchPositions = () => serverFetch<Position[]>('/positions');
+export const fetchPositions = (includeInactive = false) => serverFetch<Position[]>(`/positions${includeInactive ? '?includeInactive=true' : ''}`);
 
 export const fetchCatalogVersions = () => serverFetch<CatalogVersion[]>('/catalog/versions');
 export const fetchCatalogVersion = (id: string) => serverFetch<CatalogVersionView>(`/catalog/versions/${id}`);
@@ -397,7 +497,7 @@ export const fetchAccountRoles = (id: string) => serverFetch<RoleAssignment[]>(`
 export type ReportKind = 'MONTH' | 'QUARTER' | 'YEAR';
 export type PeriodMode = 'AUTO' | 'MANUAL';
 export type ProgressStatus = 'REPORTED' | 'CONFIRMED' | 'REJECTED';
-export type AssignmentState = 'IN_PROGRESS' | 'PENDING_CONFIRM' | 'OVERDUE' | 'DONE' | 'CANCELLED';
+export type AssignmentState = 'PROPOSED' | 'IN_PROGRESS' | 'PENDING_CONFIRM' | 'OVERDUE' | 'DONE' | 'CANCELLED';
 export type SearchScope = 'mine' | 'team' | 'all' | 'consulted' | 'approving' | 'assigned';
 
 export interface WorkAssignment {
@@ -410,11 +510,36 @@ export interface WorkAssignment {
   reportKinds: ReportKind[];
   /** Nội dung việc. */
   note: string | null;
-  status: 'OPEN' | 'CANCELLED';
+  /** PROPOSED: cán bộ đề xuất việc đột xuất, chờ cấp trên duyệt (ADR-046). */
+  status: 'PROPOSED' | 'OPEN' | 'CANCELLED';
+  /** CATALOG: việc trong danh mục. AD_HOC: việc đột xuất, ngoài kế hoạch, tính thêm điểm (ADR-046). */
+  source: 'CATALOG' | 'AD_HOC';
+  /** Tên việc đột xuất; null với việc trong danh mục. */
+  title: string | null;
+  /** Có giá trị khi việc do một mẫu việc lặp định kỳ sinh ra. */
+  recurringTemplateId: string | null;
+  recurringKey: string | null;
+  /** Vị trí mà việc được giao cho (ADR-047); null: chưa xác định, hiểu là vị trí chính. */
+  positionId: string | null;
   /** Ngày giao (ISO). */
   createdAt: string;
   /** Người duyệt (cc) do người giao chọn; null là cấp trên trực tiếp. */
   approverPersonId: string | null;
+  /** Kết quả then chốt (OKR) của người nhận mà việc góp phần đạt, nhãn lưu lúc giao; chỉ để theo dõi (ADR-034). */
+  okrKeyResult: string | null;
+}
+
+/** Một kết quả then chốt trong cột OKR của vị trí. */
+export interface OkrKeyResult {
+  code: string;
+  text: string;
+}
+
+/** Cột OKR của vị trí đã tách thành Mục tiêu và các kết quả then chốt; `raw` rỗng là vị trí chưa có OKR. */
+export interface Okr {
+  raw: string;
+  objective: string | null;
+  keyResults: OkrKeyResult[];
 }
 
 export interface WorkProgress {
@@ -449,6 +574,8 @@ export interface AssignmentView {
   approverPersonId: string | null;
   consultantPersonIds: string[];
   state: AssignmentState;
+  /** Mức độ khó (1 đến 4) của việc đột xuất; null với việc trong danh mục. */
+  adHocLevel: number | null;
 }
 
 export type AssignmentScope = 'mine' | 'team' | 'all';
@@ -462,13 +589,160 @@ export interface CatalogCurrent {
 
 export const fetchWorkTasks = (scope: AssignmentScope) => serverFetch<WorkTask[]>(`/tasking/tasks?scope=${scope}`);
 export const fetchAssignments = (scope: AssignmentScope) => serverFetch<AssignmentView[]>(`/tasking/assignments?scope=${scope}`);
+export const fetchOkr = (personId: string) => serverFetch<Okr>(`/tasking/okr/${personId}`);
 export const fetchCatalogCurrent = () => serverFetch<CatalogCurrent>('/catalog/current');
 
 export const fetchPeriods = () => serverFetch<Period[]>('/evaluation/periods');
 export const fetchEvaluations = (periodId: string) => serverFetch<EvaluationSummary[]>(`/evaluation/periods/${periodId}/evaluations`);
 export const fetchEvaluation = (id: string) => serverFetch<EvaluationDetail>(`/evaluation/evaluations/${id}`);
+/** Số liệu tham chiếu từ việc được giao trong năm của đơn vị (ADR-030 mục 4). */
+export interface UnitMetrics {
+  works: number;
+  completed: number;
+  onTime: number;
+  exceeded: number;
+  late: number;
+}
+
+export interface UnitEvaluationRecord {
+  id: string;
+  periodId: string;
+  unitId: string;
+  status: EvaluationStatus;
+  selfGeneralScore: number | null;
+  selfResultScore: number | null;
+  selfComment: string | null;
+  generalScore: number | null;
+  resultScore: number | null;
+  reviewComment: string | null;
+  approveComment: string | null;
+  returnReason: string | null;
+  totalScore: number | null;
+  rating: RatingCode | null;
+  /** Điểm từng trục khi tự chấm và khi thẩm định, kèm ảnh chụp định nghĩa trục (ADR-036); null khi nhập một số. */
+  selfAxisScores: AxisScore[] | null;
+  axisScores: AxisScore[] | null;
+}
+
+export type AxisKind = 'GENERAL' | 'RESULT';
+
+/** Một trục chấm điểm tập thể (ADR-036). */
+export interface AxisDefinition {
+  code: string;
+  name: string;
+  kind: AxisKind;
+  maxPoints: number;
+  sortOrder: number;
+  autoMetric: 'COMPLETED_SHARE' | null;
+  active: boolean;
+}
+
+export interface AxisScore {
+  code: string;
+  name: string;
+  kind: AxisKind;
+  max: number;
+  score: number;
+}
+
+export interface UnitEvaluationView {
+  evaluation: UnitEvaluationRecord;
+  period: Period;
+  unit: { id: string; code: string; name: string; type: 'BAN' | 'PHONG' };
+  headPersonId: string | null;
+  metrics: UnitMetrics;
+  proposedRating: RatingCode | null;
+  warnings: string[];
+  /** Các trục đang bật khi chấm điểm; rỗng là nhập một số cho cả hai nhóm (ADR-036). */
+  axes: AxisDefinition[];
+  /** Điểm gợi ý theo số liệu tham chiếu, theo mã trục. */
+  suggested: Record<string, number>;
+  /** Hạn hoàn thành đánh giá năm (ADR-038). */
+  deadline: Deadline | null;
+  /** Khiếu nại, phản ánh chưa kết luận; chặn công nhận. Người đứng đầu và thành viên luôn thấy 0. */
+  openComplaints: number;
+}
+
+export const fetchUnitAxes = () => serverFetch<AxisDefinition[]>('/unit-evaluation/axes');
+export const fetchUnitEvaluations = (periodId: string) => serverFetch<UnitEvaluationView[]>(`/unit-evaluation/periods/${periodId}`);
+export const fetchUnitEvaluation = (id: string) => serverFetch<UnitEvaluationView>(`/unit-evaluation/${id}`);
+export interface UnitReportRow {
+  evaluationId: string;
+  unitCode: string;
+  unitName: string;
+  unitType: 'BAN' | 'PHONG';
+  headName: string;
+  status: EvaluationStatus;
+  generalScore: number | null;
+  resultScore: number | null;
+  totalScore: number | null;
+  rating: RatingCode | null;
+  warnings: number;
+  axes: { code: string; name: string; kind: AxisKind; maxPoints: number; points: number }[];
+}
+
+export interface AxisSummary {
+  code: string;
+  name: string;
+  kind: AxisKind;
+  maxPoints: number;
+  count: number;
+  average: number | null;
+  ratio: number | null;
+  lowest: number | null;
+}
+
+export interface UnitReport {
+  period: Period;
+  scope: 'ALL' | 'LIMITED';
+  units: number;
+  approved: number;
+  pendingApproval: number;
+  inProgress: number;
+  ratings: Record<RatingCode, number>;
+  averageTotal: number | null;
+  quota: { excellent: number; good: number; allowed: number; exceeded: boolean };
+  axisSummary: AxisSummary[];
+  rows: UnitReportRow[];
+  notes: string[];
+}
+
+export const fetchUnitReport = (periodId: string) => serverFetch<UnitReport>(`/reporting/periods/${periodId}/units`);
+export const fetchUnitDraft = (periodId: string) => serverFetch<Draft>(`/reporting/periods/${periodId}/units/draft`);
+export interface AuditEntry {
+  id: string;
+  occurredAt: string;
+  actorAccountId: string | null;
+  actorUsername: string | null;
+  action: string;
+  outcome: 'SUCCESS' | 'DENIED' | 'FAILURE';
+  /** Mô-đun và loại thao tác (PLAN-A A5); bản ghi cũ được máy chủ suy từ `action`. */
+  module: string;
+  type: string;
+  hashVersion: number;
+  targetType: string | null;
+  targetId: string | null;
+  details: Record<string, unknown> | null;
+  requestId: string | null;
+  ip: string | null;
+  prevHash: string;
+  hash: string;
+}
+
+export interface AuditVerification {
+  valid: boolean;
+  checked: number;
+  lastId: string | null;
+  lastHash: string;
+  firstInvalidId?: string;
+  reason?: string;
+}
+
+export const fetchAuditLogs = (query: string) => serverFetch<AuditEntry[]>(`/audit-logs?${query}`);
+export const fetchAuditActions = () => serverFetch<string[]>('/audit-logs/actions');
+export const fetchAuditFacets = () => serverFetch<{ modules: string[]; types: string[] }>('/audit-logs/facets');
 export const fetchDashboard = (periodId: string) => serverFetch<PeriodReport>(`/reporting/periods/${periodId}/dashboard`);
-export const fetchDraft = (periodId: string, kind: 'report' | 'decision') =>
+export const fetchDraft = (periodId: string, kind: 'report' | 'decision' | 'notice') =>
   serverFetch<Draft>(`/reporting/periods/${periodId}/draft?kind=${kind}`);
 
 export interface SearchResult {
@@ -504,3 +778,104 @@ export interface Conversation {
   comments: WorkComment[];
   attachments: WorkAttachment[];
 }
+
+/** Rà soát quyền định kỳ (ADR-044). */
+export interface AccessReviewView {
+  id: string;
+  year: number;
+  quarter: number;
+  label: string;
+  status: 'OPEN' | 'CLOSED';
+  /** YYYY-MM-DD theo giờ Việt Nam. */
+  dueDate: string;
+  note: string | null;
+  createdAt: string;
+  closedAt: string | null;
+  counts: { total: number; decided: number; pending: number; keep: number; revoke: number };
+  overdue: boolean;
+}
+
+export interface AccessReviewItem {
+  id: string;
+  accountId: string;
+  username: string;
+  personId: string | null;
+  personName: string | null;
+  unitName: string | null;
+  positionTitle: string | null;
+  role: string;
+  roleValidFrom: string;
+  roleValidTo: string | null;
+  reviewerKind: 'LEADER' | 'DATA_ADMIN';
+  reviewerName: string | null;
+  decision: 'KEEP' | 'REVOKE' | null;
+  decidedAt: string | null;
+  note: string | null;
+  revokeApplied: boolean;
+}
+
+export interface AccessReviewDetail {
+  review: AccessReviewView;
+  items: (AccessReviewItem & { canDecide: boolean })[];
+}
+
+export interface AccessReviewSuggestion {
+  year: number;
+  quarter: number;
+  label: string;
+  exists: boolean;
+  reviewId: string | null;
+}
+
+export const fetchAccessReviews = () => serverFetch<AccessReviewView[]>('/access-reviews');
+export const fetchAccessReview = (id: string) => serverFetch<AccessReviewDetail>(`/access-reviews/${id}`);
+export const fetchAccessReviewSuggestion = () => serverFetch<AccessReviewSuggestion>('/access-reviews/suggestion');
+
+/** Mẫu việc lặp định kỳ (ADR-046). */
+export type RecurringFrequency = 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY';
+export interface RecurringTemplate {
+  id: string;
+  assigneePersonId: string;
+  taskId: string;
+  source: 'CATALOG' | 'AD_HOC';
+  catalogItemCode: string;
+  title: string | null;
+  plannedQuantity: number;
+  frequency: RecurringFrequency;
+  startDate: string;
+  endDate: string | null;
+  dueAfterDays: number;
+  periodMode: PeriodMode;
+  reportKinds: ReportKind[];
+  note: string | null;
+  approverPersonId: string | null;
+  status: 'ACTIVE' | 'INACTIVE';
+  createdBy: string;
+  createdAt: string;
+  lastRunAt: string | null;
+  lastError: string | null;
+  generatedCount: number;
+  nextOccurrence: string | null;
+}
+
+export const fetchRecurring = () => serverFetch<RecurringTemplate[]>('/tasking/recurring');
+
+/** Thống kê việc theo bộ lọc (PLAN-A A6.4). */
+export interface TaskGroupStats {
+  total: number;
+  done: number;
+  overdue: number;
+  late: number;
+  rework: number;
+  lateRate: number | null;
+  reworkRate: number | null;
+}
+
+export interface TaskStatistics {
+  byState: Record<AssignmentState, number>;
+  overall: TaskGroupStats;
+  byUnit: ({ unitName: string } & TaskGroupStats)[];
+}
+
+/** Loại việc để lọc: giao từ danh mục, đột xuất, hoặc do mẫu lặp định kỳ sinh ra. */
+export type WorkKind = 'CATALOG' | 'AD_HOC' | 'RECURRING';

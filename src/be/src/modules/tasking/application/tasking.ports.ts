@@ -1,5 +1,6 @@
 import type {
   AssignmentModel,
+  AssignmentPatch,
   AssignmentStatus,
   AttachmentModel,
   CommentModel,
@@ -12,6 +13,8 @@ import type {
   ProgressPatch,
   WorkTaskModel,
 } from './tasking.model.js';
+import type { ParsedOkr } from '../../organization/index.js';
+import type { NewRecurringTemplate, RecurringTemplateModel, RecurringTemplatePatch } from './recurring.model.js';
 
 /** Các cổng của lớp nghiệp vụ (abstract class để làm token DI). */
 export abstract class AssignmentRepository {
@@ -23,8 +26,12 @@ export abstract class AssignmentRepository {
   abstract findByAssigner(accountId: string): Promise<AssignmentModel[]>;
   /** Việc chỉ định người này làm người duyệt (cc). */
   abstract findByApprover(personId: string): Promise<AssignmentModel[]>;
-  /** Sửa nội dung và người duyệt. */
-  abstract update(id: string, patch: { note?: string | null; approverPersonId?: string | null }): Promise<AssignmentModel>;
+  /** Sửa nội dung, người duyệt, kết quả then chốt; khi duyệt đề xuất còn mức độ khó, số lượng, hạn. */
+  abstract update(id: string, patch: AssignmentPatch): Promise<AssignmentModel>;
+  /** Các ngày lặp đã sinh việc của một mẫu (kể cả việc đã hủy), để không sinh trùng. */
+  abstract findRecurringKeys(templateId: string): Promise<Set<string>>;
+  /** Việc do một mẫu việc lặp sinh ra. */
+  abstract findByTemplate(templateId: string): Promise<AssignmentModel[]>;
   /** Việc đang mở có hạn trong khoảng ngày [from, to]. */
   abstract findOpenDueBetween(from: string, to: string): Promise<AssignmentModel[]>;
   abstract create(data: NewAssignment): Promise<AssignmentModel>;
@@ -78,13 +85,19 @@ export abstract class ProgressRepository {
 /** Cổng sang mô-đun organization: ai là cấp trên, ai là cấp dưới của một cán bộ tại thời điểm này. */
 export abstract class OrgDirectory {
   /** Người giữ các vị trí cấp trên, từ trực tiếp lên gốc, đã bỏ vị trí trống. */
-  abstract superiorHolders(personId: string): Promise<string[]>;
+  abstract superiorHolders(personId: string, positionId?: string | null): Promise<string[]>;
   /** Người giữ các vị trí cấp dưới (trực tiếp hoặc mọi cấp). */
   abstract subordinateHolders(personId: string, options: { direct: boolean }): Promise<string[]>;
   /** Trong các mã cán bộ đã cho, những người đang được quản lý (chưa ngừng). */
   abstract activePersonIds(personIds: readonly string[]): Promise<Set<string>>;
-  /** Đơn vị và vị trí cán bộ đang giữ, hoặc null nếu chưa có vị trí. */
-  abstract placementOf(personId: string): Promise<Placement | null>;
+  /** Đơn vị và vị trí `positionId` (hoặc vị trí chính nếu không nêu) của cán bộ, hoặc null nếu chưa có vị trí. */
+  abstract placementOf(personId: string, positionId?: string | null): Promise<Placement | null>;
+  /** Mọi vị trí cán bộ đang giữ, vị trí chính trước, rồi kiêm nhiệm (ADR-047). */
+  abstract placementsOf(personId: string): Promise<(Placement & { kind: 'PRIMARY' | 'CONCURRENT' })[]>;
+  /** Mục tiêu và kết quả then chốt của vị trí cán bộ đang giữ (ADR-034), hoặc null. */
+  abstract okrOf(personId: string): Promise<ParsedOkr | null>;
+  /** Tên cán bộ, chức danh và đơn vị của vị trí, để ghép vào tệp xuất và thống kê. */
+  abstract lookup(): Promise<{ persons: Map<string, { fullName: string }>; positions: Map<string, { title: string; unitName: string }> }>;
 }
 
 /** Nơi cán bộ đang công tác, dùng để đối chiếu phạm vi áp dụng của công việc (ADR-021). */
@@ -107,4 +120,13 @@ export abstract class CatalogDirectory {
   abstract currentApproved(): Promise<{ versionId: string; items: Map<string, CatalogItemInfo> } | null>;
   /** Thông tin công việc theo phiên bản (dùng để hiện tên cho việc đã giao). */
   abstract itemsOf(versionId: string): Promise<Map<string, CatalogItemInfo> | null>;
+}
+
+/** Mẫu việc lặp (ADR-046). */
+export abstract class RecurringTemplateRepository {
+  abstract findById(id: string): Promise<RecurringTemplateModel | null>;
+  abstract findAll(): Promise<RecurringTemplateModel[]>;
+  abstract findActive(): Promise<RecurringTemplateModel[]>;
+  abstract create(data: NewRecurringTemplate): Promise<RecurringTemplateModel>;
+  abstract update(id: string, patch: RecurringTemplatePatch): Promise<RecurringTemplateModel>;
 }

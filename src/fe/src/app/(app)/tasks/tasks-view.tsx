@@ -1,11 +1,13 @@
 'use client';
 
-import { PlusOutlined } from '@ant-design/icons';
-import { Button, Tabs } from 'antd';
+import { PlusOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Button, Space, Tabs } from 'antd';
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import type { PickerGroup, PickerItem, PickerTask } from '@/components/catalog-item-picker';
 import type { AssignmentView, OrgUnit, SearchScope, WorkTask } from '@/lib/api';
-import { holdersOf } from '@/lib/org';
+import { holdersOf, uniqueByPerson } from '@/lib/org';
+import { AdHocAssignModal, ProposeModal } from './ad-hoc-modals';
 import AssignModal from './assign-modal';
 import type { Assignee } from './assign-modal';
 import TaskBoard from './task-board';
@@ -23,6 +25,8 @@ interface Props {
   initialOpen: AssignmentView | null;
   teamTasks: WorkTask[];
   assignees: Assignee[];
+  /** Các vị trí người đăng nhập đang giữ (nhiều hơn một khi kiêm nhiệm), để đề xuất việc đột xuất cho đúng vị trí. */
+  myPositions: { positionId: string; label: string }[];
   catalogItems: PickerItem[];
   catalogGroups: PickerGroup[];
   catalogTasks: PickerTask[];
@@ -32,23 +36,40 @@ interface Props {
 }
 
 /** Màn theo dõi việc (ADR-024): mỗi tab là một phạm vi, danh sách có lọc và phân trang; mở từng việc để trao đổi, đính kèm tệp. */
-export default function TasksView({ myPersonId, names, tree, scopes, stamp, initialOpen, teamTasks, assignees, catalogItems, catalogGroups, catalogTasks, canAssign, canConfirm, canReport }: Props) {
+export default function TasksView({ myPersonId, names, tree, scopes, stamp, initialOpen, teamTasks, assignees, myPositions, catalogItems, catalogGroups, catalogTasks, canAssign, canConfirm, canReport }: Props) {
   const [assigning, setAssigning] = useState(false);
+  const [assigningAdHoc, setAssigningAdHoc] = useState(false);
+  const [proposing, setProposing] = useState(false);
   const [opened, setOpened] = useState<AssignmentView | null>(initialOpen);
   const [reloadKey, setReloadKey] = useState(0);
   const directReportIds = useMemo(() => new Set(assignees.map((a) => a.personId)), [assignees]);
-  const assigneeOptions = useMemo(() => holdersOf(tree).map((h) => ({ value: h.personId, label: `${h.fullName} – ${h.title}` })), [tree]);
+  const assigneeOptions = useMemo(() => uniqueByPerson(holdersOf(tree)).map((h) => ({ value: h.personId, label: `${h.fullName} – ${h.title}` })), [tree]);
 
   return (
     <>
-      <Tabs
-        tabBarExtraContent={
-          canAssign ? (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setAssigning(true)}>
-              Giao việc
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <Space wrap>
+          {canAssign && (
+            <>
+              <Link href="/tasks/recurring">
+                <Button>Việc lặp định kỳ</Button>
+              </Link>
+              <Button icon={<ThunderboltOutlined />} onClick={() => setAssigningAdHoc(true)}>
+                Giao việc đột xuất
+              </Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setAssigning(true)}>
+                Giao việc
+              </Button>
+            </>
+          )}
+          {canReport && (
+            <Button icon={<ThunderboltOutlined />} onClick={() => setProposing(true)}>
+              Đề xuất việc đột xuất
             </Button>
-          ) : null
-        }
+          )}
+        </Space>
+      </div>
+      <Tabs
         items={scopes.map((s) => ({
           key: s.key,
           label: s.label,
@@ -80,6 +101,8 @@ export default function TasksView({ myPersonId, names, tree, scopes, stamp, init
           onClose={() => setAssigning(false)}
         />
       )}
+      {assigningAdHoc && <AdHocAssignModal assignees={assignees} tasks={teamTasks} onClose={() => setAssigningAdHoc(false)} />}
+      {proposing && <ProposeModal myPositions={myPositions} onClose={() => setProposing(false)} />}
       {opened && (
         <TaskDetail
           key={opened.assignment.id}

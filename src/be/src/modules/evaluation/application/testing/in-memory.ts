@@ -16,12 +16,17 @@ import type {
 import {
   CatalogDirectory,
   EvaluationRepository,
+  HeadedUnitRatingSource,
   OrgDirectory,
   PeriodRepository,
   PeriodWorkSource,
   TaskRepository,
 } from '../evaluation.ports.js';
-import type { CatalogVersionInfo, PeriodWork, Superior } from '../evaluation.ports.js';
+import type { CatalogVersionInfo, HeadedUnitRating, Placement, PeriodWork, PositionInfo, Superior } from '../evaluation.ports.js';
+import { LeaveRepository } from '../leave.js';
+import type { LeaveMonth } from '../leave.js';
+import { UnitComplaintRepository } from '../unit-complaint.js';
+import type { NewUnitComplaint, UnitComplaintModel, UnitComplaintPatch } from '../unit-complaint.js';
 import { EvaluationService } from '../evaluation.service.js';
 import type { Actor } from '../evaluation.service.js';
 
@@ -49,12 +54,15 @@ export class InMemoryPeriods extends PeriodRepository {
     return [...this.rows];
   }
   async create(data: NewPeriod) {
-    const row: PeriodModel = { ...data, id: nextId('per'), status: 'OPEN' };
+    const row: PeriodModel = { ...data, id: nextId('per'), status: 'OPEN', ratingDeadline: null };
     this.rows.push(row);
     return row;
   }
   async close(id: string) {
     this.rows.find((p) => p.id === id)!.status = 'CLOSED';
+  }
+  async setDeadline(id: string, date: string | null) {
+    this.rows.find((p) => p.id === id)!.ratingDeadline = date;
   }
 }
 
@@ -65,9 +73,12 @@ export class InMemoryEvaluations extends EvaluationRepository {
     const row = this.rows.find((e) => e.id === id);
     return row ? { ...row } : null;
   }
-  async findByPeriodAndPerson(periodId: string, personId: string) {
-    const row = this.rows.find((e) => e.periodId === periodId && e.personId === personId);
+  async findByPeriodPersonPosition(periodId: string, personId: string, positionId: string) {
+    const row = this.rows.find((e) => e.periodId === periodId && e.personId === personId && e.positionId === positionId);
     return row ? { ...row } : null;
+  }
+  async findByPersonInPeriod(periodId: string, personId: string) {
+    return this.rows.filter((e) => e.periodId === periodId && e.personId === personId).map((e) => ({ ...e }));
   }
   async findByPeriod(periodId: string) {
     return this.rows.filter((e) => e.periodId === periodId).map((e) => ({ ...e }));
@@ -88,6 +99,7 @@ export class InMemoryEvaluations extends EvaluationRepository {
       approvedAt: null,
       approveComment: null,
       returnReason: null,
+      notRatedReason: null,
       resultScore: null,
       totalScore: null,
       rating: null,
@@ -142,13 +154,25 @@ export class InMemoryTasks extends TaskRepository {
 
 /** Sơ đồ giả: mỗi cán bộ có vị trí và chuỗi cấp trên đặt tay. */
 export class FakeOrg extends OrgDirectory {
-  positions = new Map<string, { positionId: string; level: number }>();
+  positions = new Map<string, PositionInfo>();
   chains = new Map<string, Superior[]>();
+  /** Vị trí kiêm nhiệm của từng cán bộ (ngoài vị trí chính ở `positions`). */
+  concurrent = new Map<string, PositionInfo[]>();
+  /** Chuỗi cấp trên riêng cho một vị trí (dùng cho vị trí kiêm nhiệm); không có thì dùng chuỗi của cán bộ. */
+  positionChains = new Map<string, Superior[]>();
   async positionOf(personId: string) {
     return this.positions.get(personId) ?? null;
   }
-  async superiorsOf(personId: string) {
-    return this.chains.get(personId) ?? [];
+  async positionInfo(positionId: string) {
+    const all = [...this.positions.values(), ...[...this.concurrent.values()].flat()];
+    return all.find((p) => p.positionId === positionId) ?? null;
+  }
+  async placementsDuring(personId: string): Promise<Placement[]> {
+    const primary = this.positions.get(personId);
+    return [...(primary ? [{ ...primary, kind: 'PRIMARY' as const }] : []), ...(this.concurrent.get(personId) ?? []).map((p) => ({ ...p, kind: 'CONCURRENT' as const }))];
+  }
+  async superiorsOf(personId: string, positionId?: string) {
+    return (positionId ? this.positionChains.get(positionId) : undefined) ?? this.chains.get(personId) ?? [];
   }
   async subordinateHolders(personId: string, options: { direct: boolean }) {
     return [...this.chains]
@@ -199,6 +223,14 @@ export function actorOf(personKey: keyof typeof PEOPLE | null, account = personK
   return { id: `acc-${account}`, username: String(account), personId: personKey ? PEOPLE[personKey] : null };
 }
 
+/** Mức đơn vị do cán bộ đứng đầu, đặt tay theo cán bộ (Điều 20.6). */
+export class FakeUnitRatings extends HeadedUnitRatingSource {
+  byPerson = new Map<string, HeadedUnitRating>();
+  async of(personId: string) {
+    return this.byPerson.get(personId) ?? null;
+  }
+}
+
 export async function buildEvaluation() {
   const clock = new FakeClock();
   const audit: { action: string; details?: Record<string, unknown> }[] = [];
@@ -210,6 +242,9 @@ export async function buildEvaluation() {
   const org = new FakeOrg();
   const catalog = new FakeCatalog();
   const work = new FakeWork();
+  const unitRatings = new FakeUnitRatings();
+  const leave = new InMemoryLeave();
+  const complaints = new InMemoryUnitComplaints();
 
   const level: Record<string, number> = { boss: 1, deputy: 2, head: 3, staff: 5, other: 5 };
   for (const [key, id] of Object.entries(PEOPLE)) org.positions.set(id, { positionId: `pos-${key}`, level: level[key] });
@@ -233,11 +268,14 @@ export async function buildEvaluation() {
       { provide: PeriodWorkSource, useValue: work },
       { provide: AuditService, useValue: { record: async (e: { action: string }) => void audit.push(e) } },
       { provide: Notifier, useValue: notifier },
+      { provide: HeadedUnitRatingSource, useValue: unitRatings },
+      { provide: LeaveRepository, useValue: leave },
+      { provide: UnitComplaintRepository, useValue: complaints },
     ],
   }).compile();
   const service = moduleRef.get(EvaluationService);
 
-  return { service, clock, audit, repos, org, catalog, work, sup, notifier };
+  return { service, clock, audit, repos, org, catalog, work, sup, notifier, unitRatings, leave, complaints };
 }
 
 export type Harness = Awaited<ReturnType<typeof buildEvaluation>>;
@@ -272,4 +310,56 @@ export async function seedReviewed(h: Harness) {
     ],
   });
   return { ...seeded, view };
+}
+
+export class InMemoryUnitComplaints extends UnitComplaintRepository {
+  rows: UnitComplaintModel[] = [];
+  async create(data: NewUnitComplaint) {
+    const row: UnitComplaintModel = {
+      ...data,
+      id: nextId('cmp'),
+      status: 'RECEIVED',
+      createdAt: new Date(),
+      assignee: null,
+      verifyDue: null,
+      verifyDirectedBy: null,
+      verifyDirectedAt: null,
+      outcome: null,
+      conclusion: null,
+      closedBy: null,
+      closedAt: null,
+    };
+    this.rows.push(row);
+    return { ...row };
+  }
+  async findById(id: string) {
+    const row = this.rows.find((c) => c.id === id);
+    return row ? { ...row } : null;
+  }
+  async findByUnitAndPeriod(unitId: string, periodId: string) {
+    return this.rows.filter((c) => c.unitId === unitId && c.periodId === periodId).map((c) => ({ ...c }));
+  }
+  async openCounts(periodId: string) {
+    const out = new Map<string, number>();
+    for (const c of this.rows) if (c.periodId === periodId && c.status !== 'CLOSED') out.set(c.unitId, (out.get(c.unitId) ?? 0) + 1);
+    return out;
+  }
+  async countSolidarityIssues(unitId: string, from: string, to: string) {
+    return this.rows.filter((c) => c.unitId === unitId && c.kind === 'MAT_DOAN_KET' && c.receivedOn >= from && c.receivedOn <= to && !(c.status === 'CLOSED' && c.outcome === 'UNFOUNDED')).length;
+  }
+  async update(id: string, patch: UnitComplaintPatch) {
+    const row = this.rows.find((c) => c.id === id)!;
+    Object.assign(row, patch);
+    return { ...row };
+  }
+}
+
+export class InMemoryLeave extends LeaveRepository {
+  rows = new Map<string, LeaveMonth[]>();
+  async monthsOf(personId: string, year: number) {
+    return [...(this.rows.get(`${personId}:${year}`) ?? [])];
+  }
+  async replace(personId: string, year: number, months: readonly LeaveMonth[]) {
+    this.rows.set(`${personId}:${year}`, [...months]);
+  }
 }

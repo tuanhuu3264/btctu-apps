@@ -33,6 +33,7 @@ export function computeStats(rows: readonly ReportRow[]): Stats {
 
   return {
     evaluations: rows.length,
+    people: new Set(rows.map((r) => r.personId)).size,
     approved: approved.length,
     pendingApproval: rows.filter((r) => r.status === 'REVIEWED').length,
     inProgress: rows.filter((r) => r.status === 'PLANNED' || r.status === 'SELF_SUBMITTED').length,

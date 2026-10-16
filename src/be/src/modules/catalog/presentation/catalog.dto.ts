@@ -208,3 +208,11 @@ export class ApproveVersionDto {
   @IsDateString()
   effectiveFrom?: string;
 }
+
+/** Lý do ngừng sử dụng (không bắt buộc). */
+export class DeactivateCatalogDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}

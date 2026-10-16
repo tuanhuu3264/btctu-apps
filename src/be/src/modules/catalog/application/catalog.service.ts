@@ -94,13 +94,17 @@ export class CatalogService {
       // Sao chép nhiệm vụ trước, rồi công việc với quan hệ được giữ nguyên.
       const taskIds = new Map<string, string>();
       for (const task of await this.tasks.findByVersion(source.id)) {
-        const { id, versionId: _versionId, ...rest } = task;
-        taskIds.set(id, (await this.tasks.create({ ...rest, versionId: created.id })).id);
+        const { id, versionId: _versionId, status, inactiveAt, inactiveReason, ...rest } = task;
+        const copy = await this.tasks.create({ ...rest, versionId: created.id });
+        if (status === 'INACTIVE') await this.tasks.setStatus(copy.id, { status, inactiveAt, inactiveReason });
+        taskIds.set(id, copy.id);
       }
       const itemIds = new Map<string, string>();
       for (const item of await this.items.findByVersion(source.id)) {
-        const { id, versionId: _versionId, taskId, ...rest } = item;
-        itemIds.set(id, (await this.items.create({ ...rest, versionId: created.id, taskId: taskIds.get(taskId)! })).id);
+        const { id, versionId: _versionId, taskId, status, inactiveAt, inactiveReason, ...rest } = item;
+        const copy = await this.items.create({ ...rest, versionId: created.id, taskId: taskIds.get(taskId)! });
+        if (status === 'INACTIVE') await this.items.setStatus(copy.id, { status, inactiveAt, inactiveReason });
+        itemIds.set(id, copy.id);
       }
       await this.scopes.createMany(
         (await this.scopes.findByVersion(source.id)).flatMap((s) => (itemIds.has(s.itemId) ? [{ ...s, itemId: itemIds.get(s.itemId)! }] : [])),
@@ -241,6 +245,7 @@ export class CatalogService {
     if (input.taskId) {
       task = await this.requireTask(input.taskId);
       if (task.versionId !== versionId) throw new BadRequestException('Nhiệm vụ không thuộc phiên bản này');
+      if (task.status !== 'ACTIVE') throw new ConflictException('Nhiệm vụ đã ngừng sử dụng');
     }
     if (input.code === undefined && task === null) throw new BadRequestException('Cần chọn nhiệm vụ hoặc nhập mã công việc');
     const code = input.code ?? nextCode(task!.groupCode, existing);
@@ -296,6 +301,7 @@ export class CatalogService {
       if (target.versionId !== item.versionId || target.groupCode !== item.groupCode) {
         throw new BadRequestException('Chỉ chuyển công việc sang nhiệm vụ cùng nhóm, cùng phiên bản');
       }
+      if (target.status !== 'ACTIVE') throw new ConflictException('Nhiệm vụ đã ngừng sử dụng');
     }
     if (patch.durationMode !== undefined && patch.durationMode !== 'LIMITED') {
       // Đổi sang "Thực tế" hoặc bỏ trống thì giá trị và đơn vị không còn nghĩa.
@@ -325,20 +331,43 @@ export class CatalogService {
     return updated;
   }
 
-  async deleteItem(itemId: string): Promise<void> {
+  /** "Xóa" công việc của bản nháp = chuyển sang INACTIVE (mã được giữ, không dùng lại). */
+  async deactivateItem(itemId: string, reason?: string): Promise<CatalogItemModel> {
     const item = await this.requireItem(itemId);
     const version = await this.requireDraft(item.versionId);
+    if (item.status === 'INACTIVE') throw new ConflictException('Công việc đã ngừng sử dụng');
     if (version.baselineItemCode === item.code) {
-      throw new ConflictException('Không xóa được công việc chuẩn, hãy chọn công việc chuẩn khác trước');
+      throw new ConflictException('Không ngừng được công việc chuẩn, hãy chọn công việc chuẩn khác trước');
     }
-    await this.items.delete(itemId);
+    const note = reason?.trim() || null;
+    const updated = await this.items.setStatus(itemId, { status: 'INACTIVE', inactiveAt: this.clock.now(), inactiveReason: note });
     await this.audit.record({
-      action: 'catalog.item.delete',
+      action: 'catalog.item.deactivate',
+      outcome: 'SUCCESS',
+      targetType: 'catalog_item',
+      targetId: itemId,
+      details: { versionId: item.versionId, code: item.code, reason: note },
+    });
+    return updated;
+  }
+
+  /** Kích hoạt lại công việc của bản nháp; nhiệm vụ chứa nó phải đang hoạt động. */
+  async reactivateItem(itemId: string): Promise<CatalogItemModel> {
+    const item = await this.requireItem(itemId);
+    await this.requireDraft(item.versionId);
+    if (item.status === 'ACTIVE') throw new ConflictException('Công việc đang hoạt động');
+    if ((await this.requireTask(item.taskId)).status !== 'ACTIVE') {
+      throw new ConflictException('Nhiệm vụ chứa công việc đã ngừng sử dụng; hãy kích hoạt nhiệm vụ trước');
+    }
+    const updated = await this.items.setStatus(itemId, { status: 'ACTIVE', inactiveAt: null, inactiveReason: null });
+    await this.audit.record({
+      action: 'catalog.item.reactivate',
       outcome: 'SUCCESS',
       targetType: 'catalog_item',
       targetId: itemId,
       details: { versionId: item.versionId, code: item.code },
     });
+    return updated;
   }
 
   /** Tạo nhiệm vụ trong một nhóm của bản nháp. Tên không trùng (không phân biệt hoa thường) trong cùng nhóm. */
@@ -394,27 +423,46 @@ export class CatalogService {
     return updated;
   }
 
-  /** Chỉ xóa được nhiệm vụ không còn công việc nào. */
-  async deleteTask(taskId: string): Promise<void> {
+  /** "Xóa" nhiệm vụ của bản nháp = chuyển sang INACTIVE; chỉ được khi không còn công việc đang hoạt động. */
+  async deactivateTask(taskId: string, reason?: string): Promise<CatalogTaskModel> {
     const task = await this.requireTask(taskId);
     await this.requireDraft(task.versionId);
-    if ((await this.items.findByVersion(task.versionId)).some((i) => i.taskId === taskId)) {
-      throw new ConflictException('Nhiệm vụ còn công việc, hãy chuyển hoặc xóa các công việc trước');
+    if (task.status === 'INACTIVE') throw new ConflictException('Nhiệm vụ đã ngừng sử dụng');
+    if ((await this.items.findByVersion(task.versionId)).some((i) => i.taskId === taskId && i.status === 'ACTIVE')) {
+      throw new ConflictException('Nhiệm vụ còn công việc đang hoạt động, hãy chuyển hoặc ngừng các công việc trước');
     }
-    await this.tasks.delete(taskId);
+    const note = reason?.trim() || null;
+    const updated = await this.tasks.setStatus(taskId, { status: 'INACTIVE', inactiveAt: this.clock.now(), inactiveReason: note });
     await this.audit.record({
-      action: 'catalog.task.delete',
+      action: 'catalog.task.deactivate',
+      outcome: 'SUCCESS',
+      targetType: 'catalog_task',
+      targetId: taskId,
+      details: { versionId: task.versionId, groupCode: task.groupCode, name: task.name, reason: note },
+    });
+    return updated;
+  }
+
+  async reactivateTask(taskId: string): Promise<CatalogTaskModel> {
+    const task = await this.requireTask(taskId);
+    await this.requireDraft(task.versionId);
+    if (task.status === 'ACTIVE') throw new ConflictException('Nhiệm vụ đang hoạt động');
+    const updated = await this.tasks.setStatus(taskId, { status: 'ACTIVE', inactiveAt: null, inactiveReason: null });
+    await this.audit.record({
+      action: 'catalog.task.reactivate',
       outcome: 'SUCCESS',
       targetType: 'catalog_task',
       targetId: taskId,
       details: { versionId: task.versionId, groupCode: task.groupCode, name: task.name },
     });
+    return updated;
   }
 
   async setBaseline(versionId: string, itemCode: string): Promise<CatalogVersionView> {
     const version = await this.requireDraft(versionId);
     const item = (await this.items.findByVersion(versionId)).find((i) => i.code === itemCode);
     if (!item) throw new NotFoundException(`Không có công việc ${itemCode} trong phiên bản này`);
+    if (item.status !== 'ACTIVE') throw new ConflictException('Công việc đã ngừng sử dụng, không làm công việc chuẩn được');
     if (item.points === null || item.points <= 0) {
       throw new ConflictException('Công việc chuẩn phải có điểm chấm lớn hơn 0');
     }
@@ -435,12 +483,12 @@ export class CatalogService {
    */
   async approve(approver: { id: string }, versionId: string, effectiveFrom?: Date): Promise<CatalogVersionView> {
     const version = await this.requireDraft(versionId);
-    const items = await this.items.findByVersion(versionId);
-    if (items.length === 0) throw new ConflictException('Phiên bản chưa có công việc nào');
+    const items = (await this.items.findByVersion(versionId)).filter((i) => i.status === 'ACTIVE');
+    if (items.length === 0) throw new ConflictException('Phiên bản chưa có công việc nào đang hoạt động');
     if (!version.baselineItemCode) throw new ConflictException('Chưa chọn công việc chuẩn');
     const baseline = items.find((i) => i.code === version.baselineItemCode);
     if (!baseline || baseline.points === null || baseline.points <= 0) {
-      throw new ConflictException('Công việc chuẩn không tồn tại hoặc chưa có điểm chấm lớn hơn 0');
+      throw new ConflictException('Công việc chuẩn không tồn tại, đã ngừng sử dụng hoặc chưa có điểm chấm lớn hơn 0');
     }
 
     const now = this.clock.now();
@@ -486,14 +534,14 @@ export class CatalogService {
 
     const warnings: string[] = [];
     if (!baselineItem || baselinePoints === null || baselinePoints <= 0) warnings.push('Chưa có công việc chuẩn hợp lệ nên chưa tính được hệ số');
-    for (const i of views) if (i.needsScoring) warnings.push(`Công việc ${i.code} chưa có điểm chấm`);
+    for (const i of views) if (i.needsScoring && i.status === 'ACTIVE') warnings.push(`Công việc ${i.code} chưa có điểm chấm`);
 
     return {
       version,
       groups,
       tasks: [...tasks]
         .sort((a, b) => a.groupCode.localeCompare(b.groupCode) || a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'vi'))
-        .map((t) => ({ ...t, itemCount: items.filter((i) => i.taskId === t.id).length })),
+        .map((t) => ({ ...t, itemCount: items.filter((i) => i.taskId === t.id && i.status === 'ACTIVE').length })),
       baseline: baselineItem && baselinePoints !== null ? { code: baselineItem.code, points: baselinePoints } : null,
       items: views,
       warnings,
@@ -547,7 +595,8 @@ export class CatalogService {
   private async defaultTask(versionId: string, groupCode: string): Promise<CatalogTaskModel> {
     const existing = await this.tasks.findByVersion(versionId);
     const found = existing.find((t) => t.groupCode === groupCode && t.name.toLowerCase() === DEFAULT_TASK_NAME.toLowerCase());
-    if (found) return found;
+    if (found?.status === 'ACTIVE') return found;
+    if (found) return this.tasks.setStatus(found.id, { status: 'ACTIVE', inactiveAt: null, inactiveReason: null });
     return this.tasks.create({ versionId, groupCode, name: DEFAULT_TASK_NAME, description: null, sortOrder: 0 });
   }
 

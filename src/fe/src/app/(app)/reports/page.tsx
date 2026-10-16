@@ -1,4 +1,5 @@
-import { Alert } from 'antd';
+import { Alert, Segmented } from 'antd';
+import Link from 'next/link';
 import PageTitle from '@/components/page-title';
 import { redirect } from 'next/navigation';
 import { fetchDashboard, fetchDraft, fetchMe, fetchPeriods, UnauthorizedError } from '@/lib/api';
@@ -22,7 +23,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
 
   let periods: Awaited<ReturnType<typeof fetchPeriods>> = [];
   let report: PeriodReport | null = null;
-  let drafts: { report: Draft | null; decision: Draft | null } = { report: null, decision: null };
+  let drafts: { report: Draft | null; decision: Draft | null; notice: Draft | null } = { report: null, decision: null, notice: null };
   let error: string | null = null;
   try {
     periods = await fetchPeriods();
@@ -30,7 +31,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
     if (selected) {
       report = await fetchDashboard(selected.id);
       if (me.permissions.includes('report:draft')) {
-        drafts = { report: await fetchDraft(selected.id, 'report'), decision: await fetchDraft(selected.id, 'decision') };
+        drafts = { report: await fetchDraft(selected.id, 'report'), decision: await fetchDraft(selected.id, 'decision'), notice: await fetchDraft(selected.id, 'notice') };
       }
     }
   } catch (e) {
@@ -41,6 +42,11 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
   return (
     <>
       <PageTitle>Báo cáo kết quả đánh giá</PageTitle>
+      <Segmented
+        style={{ marginBottom: 16 }}
+        value="personal"
+        options={[{ value: 'personal', label: 'Cá nhân' }, { value: 'units', label: <Link href="/reports/units">Tập thể (phòng, Ban)</Link> }]}
+      />
       {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
       <ReportView periods={periods} report={report} drafts={drafts} canExport={me.permissions.includes('report:export')} />
     </>

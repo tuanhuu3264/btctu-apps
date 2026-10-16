@@ -75,6 +75,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
         initialOpen={initialOpen}
         teamTasks={teamTasks}
         assignees={assignees}
+        myPositions={placed.filter(({ p }) => me.personId && p.holder?.personId === me.personId).map(({ p }) => ({ positionId: p.id, label: `${p.title}${p.holder?.kind === 'CONCURRENT' ? ' (kiêm nhiệm)' : ''}` }))}
         catalogItems={catalog?.items.filter((i) => i.coefficient !== null && i.coefficient > 0) ?? []}
         catalogGroups={catalog?.groups ?? []}
         catalogTasks={catalog?.tasks ?? []}

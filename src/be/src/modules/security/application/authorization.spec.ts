@@ -47,6 +47,19 @@ describe('ma trận vai trò – quyền', () => {
     }
   });
 
+  it('rà soát quyền (ADR-044): quản trị hệ thống tạo đợt, lãnh đạo xác nhận, quản trị dữ liệu giám sát; không ai vừa tạo vừa xác nhận', () => {
+    const holders = (p: (typeof PERMISSIONS)[number]) => ROLES.filter((r) => ROLE_PERMISSIONS[r].includes(p)).sort();
+    expect(holders('access-review:manage')).toEqual(['QUAN_TRI_HE_THONG']);
+    expect(holders('access-review:oversee')).toEqual(['QUAN_TRI_DU_LIEU']);
+    expect(holders('access-review:confirm')).toEqual(['PHO_TRUONG_BAN', 'TRUONG_BAN', 'TRUONG_PHO_PHONG']);
+    // Tách quyền: người tạo đợt (quản trị hệ thống) không xác nhận hay giám sát; chuyên viên và văn phòng không dính vào.
+    expect(ROLE_PERMISSIONS.QUAN_TRI_HE_THONG).not.toContain('access-review:confirm');
+    expect(ROLE_PERMISSIONS.QUAN_TRI_HE_THONG).not.toContain('access-review:oversee');
+    for (const role of ['CHUYEN_VIEN', 'VAN_PHONG', 'DAI_DIEN_THUONG_VU'] as const) {
+      expect(ROLE_PERMISSIONS[role].filter((p) => p.startsWith('access-review:'))).toEqual([]);
+    }
+  });
+
   it('quản trị dữ liệu chỉ xem, không cấp quyền hay tạo/vô hiệu hóa tài khoản', () => {
     expect(ROLE_PERMISSIONS.QUAN_TRI_DU_LIEU).not.toContain('role:assign');
     expect(ROLE_PERMISSIONS.QUAN_TRI_DU_LIEU).not.toContain('account:create');

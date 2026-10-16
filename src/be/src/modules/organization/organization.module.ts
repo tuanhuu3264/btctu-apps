@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Clock, SystemClock } from '../../common/clock.js';
 import { SecurityModule } from '../security/index.js';
 import { AssignmentService } from './application/assignment.service.js';
+import { OrgExportService } from './application/org-export.service.js';
 import { OrgImportService } from './application/org-import.service.js';
 import { OrgQueryService } from './application/org-query.service.js';
 import { AssignmentRepository, PersonRepository, PositionRepository } from './application/org.ports.js';
@@ -37,6 +38,7 @@ import { UnitController } from './presentation/unit.controller.js';
     AssignmentService,
     OrgQueryService,
     OrgImportService,
+    OrgExportService,
     { provide: Clock, useClass: SystemClock },
     { provide: UnitRepository, useClass: TypeOrmUnitRepository },
     { provide: PersonRepository, useClass: TypeOrmPersonRepository },

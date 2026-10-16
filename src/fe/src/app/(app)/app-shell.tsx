@@ -1,7 +1,10 @@
 'use client';
 
 import {
+  AimOutlined,
   ApartmentOutlined,
+  AuditOutlined,
+  SafetyCertificateOutlined,
   DashboardOutlined,
   AppstoreOutlined,
   BarChartOutlined,
@@ -12,6 +15,7 @@ import {
   LogoutOutlined,
   StarFilled,
   TeamOutlined,
+  UsergroupAddOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { Avatar, Button, Layout, Menu, Space, Tag, Typography } from 'antd';
@@ -37,9 +41,13 @@ function menuItems(permissions: string[]): Item[] {
     can('org:manage') && { key: '/organization', icon: <IdcardOutlined />, label: <Link href="/organization">Quản lý cán bộ</Link> },
     can('catalog:read') && { key: '/catalog', icon: <AppstoreOutlined />, label: <Link href="/catalog">Danh mục nhiệm vụ</Link> },
     can('task:read') && { key: '/tasks', icon: <CarryOutOutlined />, label: <Link href="/tasks">Việc được giao</Link> },
+    can('task:read') && { key: '/okr', icon: <AimOutlined />, label: <Link href="/okr">OKR theo dõi</Link> },
     (can('document:read') || can('task:read')) && { key: '/documents', icon: <FolderOpenOutlined />, label: <Link href="/documents">Quản lý tài liệu</Link> },
     can('evaluation:read') && { key: '/evaluations', icon: <FileDoneOutlined />, label: <Link href="/evaluations">Đánh giá theo kỳ</Link> },
+    can('evaluation:read') && { key: '/unit-evaluations', icon: <UsergroupAddOutlined />, label: <Link href="/unit-evaluations">Đánh giá tập thể</Link> },
     can('report:read') && { key: '/reports', icon: <BarChartOutlined />, label: <Link href="/reports">Báo cáo</Link> },
+    can('audit:read') && { key: '/audit-logs', icon: <AuditOutlined />, label: <Link href="/audit-logs">Nhật ký hoạt động</Link> },
+    (can('access-review:manage') || can('access-review:confirm') || can('access-review:oversee')) && { key: '/access-reviews', icon: <SafetyCertificateOutlined />, label: <Link href="/access-reviews">Rà soát quyền</Link> },
     can('account:read') && { key: '/accounts', icon: <TeamOutlined />, label: <Link href="/accounts">Tài khoản và vai trò</Link> },
   ];
   return items.filter((i): i is Item => i !== false);
@@ -48,7 +56,7 @@ function menuItems(permissions: string[]): Item[] {
 export default function AppShell({ me, children }: { me: Me; children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const selected = ['/org-chart', '/organization', '/catalog', '/tasks', '/documents', '/evaluations', '/reports', '/accounts'].find((p) => pathname.startsWith(p)) ?? '/';
+  const selected = ['/org-chart', '/organization', '/catalog', '/tasks', '/okr', '/documents', '/evaluations', '/unit-evaluations', '/reports', '/audit-logs', '/access-reviews', '/accounts'].find((p) => pathname.startsWith(p)) ?? '/';
 
   async function logout() {
     await apiCall('POST', '/auth/logout').catch(() => null);

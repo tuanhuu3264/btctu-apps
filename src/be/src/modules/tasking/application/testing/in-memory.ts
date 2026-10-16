@@ -2,9 +2,11 @@ import { FakeNotifier } from '../../../../common/testing/fake-notifier.js';
 import { Notifier } from '../../../../common/notifier.js';
 import { Test } from '@nestjs/testing';
 import { Clock } from '../../../../common/clock.js';
+import type { ParsedOkr } from '../../../organization/index.js';
 import { AccountService, AuditService } from '../../../security/index.js';
 import type {
   AssignmentModel,
+  AssignmentPatch,
   AssignmentStatus,
   AttachmentModel,
   CommentModel,
@@ -17,9 +19,11 @@ import type {
   ProgressPatch,
   WorkTaskModel,
 } from '../tasking.model.js';
-import { AssignmentRepository, AttachmentRepository, CatalogDirectory, CommentRepository, ConsultantRepository, FileStorage, OrgDirectory, ProgressRepository, WorkTaskRepository } from '../tasking.ports.js';
+import { AssignmentRepository, AttachmentRepository, CatalogDirectory, CommentRepository, ConsultantRepository, FileStorage, OrgDirectory, ProgressRepository, RecurringTemplateRepository, WorkTaskRepository } from '../tasking.ports.js';
 import type { CatalogItemInfo } from '../tasking.ports.js';
 import { CollaborationService } from '../collaboration.service.js';
+import type { NewRecurringTemplate, RecurringTemplateModel, RecurringTemplatePatch } from '../recurring.model.js';
+import { RecurringService } from '../recurring.service.js';
 import { TaskingService } from '../tasking.service.js';
 import type { Actor } from '../tasking.service.js';
 
@@ -65,7 +69,13 @@ export class InMemoryAssignments extends AssignmentRepository {
   async findByApprover(personId: string) {
     return this.rows.filter((a) => a.approverPersonId === personId).map((a) => ({ ...a }));
   }
-  async update(id: string, patch: { note?: string | null; approverPersonId?: string | null }) {
+  async findRecurringKeys(templateId: string) {
+    return new Set(this.rows.flatMap((a) => (a.recurringTemplateId === templateId && a.recurringKey ? [a.recurringKey] : [])));
+  }
+  async findByTemplate(templateId: string) {
+    return this.rows.filter((a) => a.recurringTemplateId === templateId).map((a) => ({ ...a }));
+  }
+  async update(id: string, patch: AssignmentPatch) {
     const row = this.rows.find((a) => a.id === id)!;
     Object.assign(row, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
     return { ...row };
@@ -74,7 +84,22 @@ export class InMemoryAssignments extends AssignmentRepository {
     return this.rows.filter((a) => a.status === 'OPEN' && a.dueDate >= from && a.dueDate <= to).map((a) => ({ ...a }));
   }
   async create(data: NewAssignment) {
-    const row: AssignmentModel = { ...data, approverPersonId: data.approverPersonId ?? null, id: nextId('as'), status: 'OPEN', createdAt: new Date(clockRef.current) };
+    if (data.recurringTemplateId && this.rows.some((a) => a.recurringTemplateId === data.recurringTemplateId && a.recurringKey === data.recurringKey)) {
+      throw new Error('UQ_work_assignment_recurring');
+    }
+    const row: AssignmentModel = {
+      ...data,
+      approverPersonId: data.approverPersonId ?? null,
+      okrKeyResult: data.okrKeyResult ?? null,
+      source: data.source ?? 'CATALOG',
+      title: data.title ?? null,
+      recurringTemplateId: data.recurringTemplateId ?? null,
+      recurringKey: data.recurringKey ?? null,
+      positionId: data.positionId ?? null,
+      id: nextId('as'),
+      status: data.status ?? 'OPEN',
+      createdAt: new Date(clockRef.current),
+    };
     this.rows.push(row);
     return { ...row };
   }
@@ -193,11 +218,37 @@ export class InMemoryProgress extends ProgressRepository {
   }
 }
 
+export class InMemoryRecurringTemplates extends RecurringTemplateRepository {
+  rows: RecurringTemplateModel[] = [];
+  async findById(id: string) {
+    const row = this.rows.find((t) => t.id === id);
+    return row ? { ...row } : null;
+  }
+  async findAll() {
+    return this.rows.map((t) => ({ ...t }));
+  }
+  async findActive() {
+    return this.rows.filter((t) => t.status === 'ACTIVE').map((t) => ({ ...t }));
+  }
+  async create(data: NewRecurringTemplate) {
+    const row: RecurringTemplateModel = { ...data, id: nextId('rt'), status: 'ACTIVE', createdAt: new Date(clockRef.current), inactiveAt: null, lastRunAt: null, lastError: null };
+    this.rows.push(row);
+    return { ...row };
+  }
+  async update(id: string, patch: RecurringTemplatePatch) {
+    const row = this.rows.find((t) => t.id === id)!;
+    Object.assign(row, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+    return { ...row };
+  }
+}
+
 /** Sơ đồ giả: chuỗi cấp trên đặt tay; cấp dưới suy ra từ các chuỗi đó. */
 export class FakeOrg extends OrgDirectory {
   chains = new Map<string, string[]>();
-  async superiorHolders(personId: string) {
-    return this.chains.get(personId) ?? [];
+  /** Chuỗi cấp trên riêng cho một vị trí (vị trí kiêm nhiệm); không có thì dùng chuỗi của cán bộ. */
+  positionChains = new Map<string, string[]>();
+  async superiorHolders(personId: string, positionId?: string | null) {
+    return (positionId ? this.positionChains.get(positionId) : undefined) ?? this.chains.get(personId) ?? [];
   }
   /** Cán bộ ngừng quản lý: test đặt vào đây. */
   inactive = new Set<string>();
@@ -208,8 +259,26 @@ export class FakeOrg extends OrgDirectory {
     return [...this.chains].filter(([, chain]) => (options.direct ? chain[0] === personId : chain.includes(personId))).map(([id]) => id);
   }
   placements = new Map<string, { unitId: string; positionId: string }>();
-  async placementOf(personId: string) {
+  /** Vị trí kiêm nhiệm của từng cán bộ (ngoài vị trí chính ở `placements`). */
+  concurrent = new Map<string, { unitId: string; positionId: string }[]>();
+  async placementsOf(personId: string) {
+    const primary = this.placements.get(personId);
+    return [...(primary ? [{ ...primary, kind: 'PRIMARY' as const }] : []), ...(this.concurrent.get(personId) ?? []).map((p) => ({ ...p, kind: 'CONCURRENT' as const }))];
+  }
+  async placementOf(personId: string, positionId?: string | null) {
+    if (positionId) return (await this.placementsOf(personId)).find((p) => p.positionId === positionId) ?? null;
     return this.placements.get(personId) ?? null;
+  }
+  /** Tên và vị trí để ghép vào tệp xuất, test đặt tay. */
+  names = new Map<string, { fullName: string }>();
+  positionNames = new Map<string, { title: string; unitName: string }>();
+  async lookup() {
+    return { persons: this.names, positions: this.positionNames };
+  }
+  /** OKR của vị trí, test đặt tay theo cán bộ. */
+  okrs = new Map<string, ParsedOkr>();
+  async okrOf(personId: string) {
+    return this.okrs.get(personId) ?? null;
   }
 }
 
@@ -246,6 +315,7 @@ export async function buildTasking() {
     consultants: new InMemoryConsultants(),
     comments: new InMemoryComments(),
     attachments: new InMemoryAttachments(),
+    templates: new InMemoryRecurringTemplates(),
   };
   const storage = new InMemoryStorage();
   const org = new FakeOrg();
@@ -261,6 +331,7 @@ export async function buildTasking() {
     providers: [
       TaskingService,
       CollaborationService,
+      RecurringService,
       { provide: Clock, useValue: clock },
       { provide: AssignmentRepository, useValue: repos.assignments },
       { provide: ProgressRepository, useValue: repos.progress },
@@ -268,6 +339,7 @@ export async function buildTasking() {
       { provide: ConsultantRepository, useValue: repos.consultants },
       { provide: CommentRepository, useValue: repos.comments },
       { provide: AttachmentRepository, useValue: repos.attachments },
+      { provide: RecurringTemplateRepository, useValue: repos.templates },
       { provide: FileStorage, useValue: storage },
       { provide: OrgDirectory, useValue: org },
       { provide: CatalogDirectory, useValue: catalog },
@@ -276,7 +348,7 @@ export async function buildTasking() {
       { provide: Notifier, useValue: notifier },
     ],
   }).compile();
-  return { service: moduleRef.get(TaskingService), collab: moduleRef.get(CollaborationService), clock, audit, repos, org, catalog, storage, notifier };
+  return { service: moduleRef.get(TaskingService), collab: moduleRef.get(CollaborationService), recurring: moduleRef.get(RecurringService), clock, audit, repos, org, catalog, storage, notifier };
 }
 
 export type Harness = Awaited<ReturnType<typeof buildTasking>>;

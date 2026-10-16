@@ -1,3 +1,5 @@
+import type { AuditModule, AuditType } from './audit-classify.js';
+
 export const AUDIT_OUTCOMES = ['SUCCESS', 'DENIED', 'FAILURE'] as const;
 export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
 
@@ -13,6 +15,9 @@ export interface AuditActor {
 export interface AuditEntryInput {
   action: string;
   outcome: AuditOutcome;
+  /** Mặc định suy từ `action` (xem `classifyAction`); nêu rõ khi cần phân loại khác. */
+  module?: AuditModule;
+  type?: AuditType;
   /** Mặc định lấy từ ngữ cảnh request; truyền rõ khi chưa có (ví dụ đăng nhập). */
   actor?: AuditActor | null;
   targetType?: string;
@@ -26,6 +31,11 @@ export interface AuditRecordDraft {
   actorUsername: string | null;
   action: string;
   outcome: AuditOutcome;
+  /** Bản ghi cũ (hashVersion 1) không lưu; khi đọc thì suy từ `action`. */
+  module: AuditModule;
+  type: AuditType;
+  /** 1: mã băm chưa gồm module/type (bản ghi trước A5); 2: có. */
+  hashVersion: number;
   targetType: string | null;
   targetId: string | null;
   details: Record<string, unknown> | null;
@@ -43,6 +53,16 @@ export interface AuditRecord extends AuditRecordDraft {
 export interface AuditQuery {
   action?: string;
   actorId?: string;
+  /** Tên đăng nhập của người thực hiện (khớp đúng). */
+  username?: string;
+  outcome?: AuditOutcome;
+  module?: AuditModule;
+  type?: AuditType;
+  targetType?: string;
+  targetId?: string;
+  /** Từ thời điểm này (gồm cả) đến trước thời điểm `to`. */
+  from?: Date;
+  to?: Date;
   /** Chỉ lấy bản ghi có id nhỏ hơn giá trị này (phân trang lùi). */
   beforeId?: string;
   limit?: number;

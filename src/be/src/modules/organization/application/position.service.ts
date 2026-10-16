@@ -1,8 +1,9 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Clock } from '../../../common/clock.js';
 import { AuditService } from '../../security/index.js';
-import { MAX_LEVEL, MIN_LEVEL } from './org.model.js';
+import { isCurrent, MAX_LEVEL, MIN_LEVEL } from './org.model.js';
 import type { NewPosition, PositionModel, PositionPatch } from './org.model.js';
-import { PositionRepository } from './org.ports.js';
+import { AssignmentRepository, PositionRepository } from './org.ports.js';
 import { UnitService } from './unit.service.js';
 
 const CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{2,79}$/;
@@ -11,12 +12,19 @@ const CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{2,79}$/;
 export class PositionService {
   constructor(
     private readonly positions: PositionRepository,
+    private readonly assignments: AssignmentRepository,
     private readonly units: UnitService,
+    private readonly clock: Clock,
     private readonly audit: AuditService,
   ) {}
 
+  /** Mọi vị trí, kể cả đã ngừng (báo cáo kỳ cũ vẫn cần). */
   list(filter?: { unitId?: string }): Promise<PositionModel[]> {
     return this.positions.findAll(filter);
+  }
+
+  async listActive(filter?: { unitId?: string }): Promise<PositionModel[]> {
+    return (await this.positions.findAll(filter)).filter((p) => p.status === 'ACTIVE');
   }
 
   async get(id: string): Promise<PositionModel> {
@@ -36,9 +44,10 @@ export class PositionService {
     if (await this.positions.findByCode(input.code)) {
       throw new ConflictException(`Mã vị trí đã tồn tại: ${input.code}`);
     }
-    await this.units.get(input.unitId);
+    await this.assertUnitActive(input.unitId);
     const all = await this.positions.findAll();
     this.assertTreeRules(input, null, all);
+    this.assertParentActive(input.reportsToPositionId, all);
 
     const created = await this.positions.create(input);
     await this.audit.record({
@@ -53,9 +62,13 @@ export class PositionService {
 
   async update(id: string, patch: PositionPatch): Promise<PositionModel> {
     const current = await this.get(id);
-    if (patch.unitId !== undefined) await this.units.get(patch.unitId);
+    if (patch.unitId !== undefined && patch.unitId !== current.unitId) await this.assertUnitActive(patch.unitId);
     const after: PositionModel = { ...current, ...patch };
-    this.assertTreeRules(after, current.id, await this.positions.findAll());
+    const all = await this.positions.findAll();
+    this.assertTreeRules(after, current.id, all);
+    if (patch.reportsToPositionId !== undefined && patch.reportsToPositionId !== current.reportsToPositionId) {
+      this.assertParentActive(patch.reportsToPositionId, all);
+    }
 
     const before = pick(current, patch); // chụp trước khi cập nhật
     const updated = await this.positions.update(id, patch);
@@ -69,22 +82,63 @@ export class PositionService {
     return updated;
   }
 
-  /** Xóa vị trí chưa có cấp dưới, lịch sử phân công, hồ sơ đánh giá hay phạm vi công việc nào trỏ tới. */
-  async delete(id: string): Promise<void> {
+  private assertParentActive(parentId: string | null, all: PositionModel[]): void {
+    if (parentId && all.find((p) => p.id === parentId)?.status === 'INACTIVE') {
+      throw new ConflictException('Vị trí cấp trên đã ngừng sử dụng');
+    }
+  }
+
+  private async assertUnitActive(unitId: string): Promise<void> {
+    const unit = await this.units.get(unitId);
+    if (unit.status !== 'ACTIVE') throw new ConflictException('Đơn vị đã ngừng sử dụng');
+  }
+
+  /**
+   * "Xóa" vị trí = chuyển sang INACTIVE (lịch sử phân công, hồ sơ đánh giá được giữ). Chỉ ngừng được khi
+   * không còn cấp dưới đang hoạt động báo cáo cho nó và không còn người đang giữ.
+   */
+  async deactivate(id: string, reason?: string): Promise<PositionModel> {
     const position = await this.get(id);
-    if ((await this.positions.findAll()).some((p) => p.reportsToPositionId === id)) {
-      throw new ConflictException('Vị trí còn cấp dưới báo cáo cho nó nên chưa xóa được');
+    if (position.status === 'INACTIVE') throw new ConflictException('Vị trí đã ngừng sử dụng');
+    const all = await this.positions.findAll();
+    if (all.some((p) => p.reportsToPositionId === id && p.status === 'ACTIVE')) {
+      throw new ConflictException('Vị trí còn cấp dưới đang hoạt động báo cáo cho nó nên chưa ngừng được');
     }
-    if ((await this.positions.delete(id)) === 'IN_USE') {
-      throw new ConflictException('Vị trí đã có lịch sử phân công, hồ sơ đánh giá hoặc đang được gán phạm vi công việc nên chưa xóa được');
+    const now = this.clock.now();
+    const holders = (await this.assignments.findByPosition(id)).filter((a) => isCurrent(a, now) || a.validFrom > now);
+    if (holders.length > 0) {
+      throw new ConflictException('Vị trí còn người đang giữ hoặc đã có phân công trong tương lai; hãy kết thúc phân công trước');
     }
+    const note = reason?.trim() || null;
+    const updated = await this.positions.setStatus(id, { status: 'INACTIVE', inactiveAt: now, inactiveReason: note });
     await this.audit.record({
-      action: 'position.delete',
+      action: 'position.deactivate',
       outcome: 'SUCCESS',
       targetType: 'position',
       targetId: id,
-      details: { code: position.code, title: position.title, level: position.level },
+      details: { code: position.code, title: position.title, level: position.level, reason: note },
     });
+    return updated;
+  }
+
+  /** Kích hoạt lại vị trí đã ngừng; đơn vị và vị trí cấp trên (nếu có) phải đang hoạt động. */
+  async reactivate(id: string): Promise<PositionModel> {
+    const position = await this.get(id);
+    if (position.status === 'ACTIVE') throw new ConflictException('Vị trí đang hoạt động');
+    await this.assertUnitActive(position.unitId);
+    if (position.reportsToPositionId) {
+      const parent = await this.positions.findById(position.reportsToPositionId);
+      if (parent && parent.status !== 'ACTIVE') throw new ConflictException('Vị trí cấp trên đã ngừng sử dụng; hãy kích hoạt vị trí cấp trên trước');
+    }
+    const updated = await this.positions.setStatus(id, { status: 'ACTIVE', inactiveAt: null, inactiveReason: null });
+    await this.audit.record({
+      action: 'position.reactivate',
+      outcome: 'SUCCESS',
+      targetType: 'position',
+      targetId: id,
+      details: { code: position.code, title: position.title },
+    });
+    return updated;
   }
 
   /** Các vị trí cấp dưới: chỉ trực tiếp, hoặc toàn bộ cây con. */

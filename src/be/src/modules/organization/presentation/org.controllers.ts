@@ -1,18 +1,23 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query, Res, StreamableFile } from '@nestjs/common';
+import type { Response } from 'express';
 import { RequirePermission } from '../../security/index.js';
 import { AssignmentService } from '../application/assignment.service.js';
 import type { AssignmentModel, PersonModel, PositionModel, PublicPerson } from '../application/org.model.js';
 import { toPublicPerson } from '../application/org.model.js';
+import { OrgExportService } from '../application/org-export.service.js';
 import { OrgQueryService } from '../application/org-query.service.js';
 import type { OrgTreeUnit } from '../application/org-query.service.js';
 import { PersonService } from '../application/person.service.js';
 import { PositionService } from '../application/position.service.js';
+import { DeactivateDto } from './create-unit.dto.js';
 import {
   AssignDto,
   CreatePersonDto,
   CreatePositionDto,
   definedOnly,
   EndAssignmentDto,
+  IncludeInactiveQueryDto,
+  OrgExportQueryDto,
   LinkAccountDto,
   PersonQueryDto,
   PositionQueryDto,
@@ -94,7 +99,8 @@ export class PositionController {
   @Get()
   @RequirePermission('org:read')
   list(@Query() query: PositionQueryDto): Promise<PositionModel[]> {
-    return this.positions.list(definedOnly(query));
+    const { includeInactive, ...filter } = definedOnly(query);
+    return includeInactive === 'true' ? this.positions.list(filter) : this.positions.listActive(filter);
   }
 
   @Post()
@@ -124,11 +130,18 @@ export class PositionController {
     return this.positions.update(id, definedOnly(dto));
   }
 
+  /** "Xóa" vị trí: đổi sang INACTIVE, không xóa dòng (PLAN-A A1). */
   @Delete(':id')
-  @HttpCode(204)
   @RequirePermission('org:manage')
-  async remove(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    await this.positions.delete(id);
+  remove(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DeactivateDto): Promise<PositionModel> {
+    return this.positions.deactivate(id, dto?.reason);
+  }
+
+  @Post(':id/reactivate')
+  @HttpCode(200)
+  @RequirePermission('org:manage')
+  reactivate(@Param('id', ParseUUIDPipe) id: string): Promise<PositionModel> {
+    return this.positions.reactivate(id);
   }
 
   @Get(':id/subordinates')
@@ -146,7 +159,7 @@ export class PositionController {
   @Post(':id/assignments')
   @RequirePermission('org:manage')
   assign(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignDto): Promise<AssignmentModel> {
-    return this.assignments.assign(id, dto.personId, dto.validFrom ? new Date(dto.validFrom) : undefined);
+    return this.assignments.assign(id, dto.personId, dto.validFrom ? new Date(dto.validFrom) : undefined, dto.kind);
   }
 }
 
@@ -164,11 +177,23 @@ export class AssignmentController {
 
 @Controller('org')
 export class OrgController {
-  constructor(private readonly query: OrgQueryService) {}
+  constructor(
+    private readonly query: OrgQueryService,
+    private readonly exporter: OrgExportService,
+  ) {}
 
   @Get('tree')
   @RequirePermission('org:read')
-  tree(): Promise<OrgTreeUnit[]> {
-    return this.query.tree();
+  tree(@Query() query: IncludeInactiveQueryDto): Promise<OrgTreeUnit[]> {
+    return this.query.tree({ includeInactive: query.includeInactive === 'true' });
+  }
+
+  /** Xuất danh sách đơn vị, vị trí hoặc cán bộ ra Excel hoặc PDF (không gồm dữ liệu cá nhân nhạy cảm). */
+  @Get('export')
+  @RequirePermission('org:read')
+  async export(@Query() query: OrgExportQueryDto, @Res({ passthrough: true }) res: Response): Promise<StreamableFile> {
+    const file = await this.exporter.export(query.list, query.format, query.includeInactive === 'true');
+    res.set({ 'Content-Type': file.contentType, 'Content-Disposition': `attachment; filename="${file.filename}"`, 'Cache-Control': 'no-store' });
+    return new StreamableFile(file.buffer);
   }
 }

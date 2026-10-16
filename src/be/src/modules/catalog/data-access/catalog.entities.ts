@@ -1,5 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-import type { DurationMode, DurationUnit, VersionStatus } from '../application/catalog.model.js';
+import type { CatalogStatus, DurationMode, DurationUnit, VersionStatus } from '../application/catalog.model.js';
 
 /** PostgreSQL trả numeric dạng chuỗi; chuyển về số (hoặc null) khi đọc. */
 const numeric = {
@@ -75,6 +75,15 @@ export class CatalogTaskEntity {
   @Column({ name: 'sort_order', type: 'int', default: 0 })
   sortOrder: number;
 
+  @Column({ type: 'varchar', length: 10, default: 'ACTIVE' })
+  status: CatalogStatus;
+
+  @Column({ name: 'inactive_at', type: 'timestamptz', nullable: true })
+  inactiveAt: Date | null;
+
+  @Column({ name: 'inactive_reason', type: 'varchar', length: 500, nullable: true })
+  inactiveReason: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }
@@ -140,6 +149,15 @@ export class CatalogItemEntity {
 
   @Column({ name: 'sort_order', type: 'int' })
   sortOrder: number;
+
+  @Column({ type: 'varchar', length: 10, default: 'ACTIVE' })
+  status: CatalogStatus;
+
+  @Column({ name: 'inactive_at', type: 'timestamptz', nullable: true })
+  inactiveAt: Date | null;
+
+  @Column({ name: 'inactive_reason', type: 'varchar', length: 500, nullable: true })
+  inactiveReason: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

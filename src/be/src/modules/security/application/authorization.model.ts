@@ -1,4 +1,4 @@
-/** 7 vai trò theo SPEC-001 mục 3. */
+/** 7 vai trò theo SPEC-001 mục 3, thêm đại diện Ban Thường vụ để thẩm định, phê duyệt hồ sơ tập thể của Ban (ADR-030). */
 export const ROLES = [
   'TRUONG_BAN',
   'PHO_TRUONG_BAN',
@@ -7,6 +7,7 @@ export const ROLES = [
   'VAN_PHONG',
   'QUAN_TRI_HE_THONG',
   'QUAN_TRI_DU_LIEU',
+  'DAI_DIEN_THUONG_VU',
 ] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -24,6 +25,9 @@ export const PERMISSIONS = [
   'role:assign',
   'role:read',
   'audit:read',
+  'access-review:manage',
+  'access-review:confirm',
+  'access-review:oversee',
   'catalog:read',
   'catalog:manage',
   'catalog:approve',
@@ -34,6 +38,8 @@ export const PERMISSIONS = [
   'evaluation:self',
   'evaluation:review',
   'evaluation:approve',
+  'evaluation:decide-ban',
+  'complaint:manage',
   'task:read',
   'task:read-all',
   'task:assign',

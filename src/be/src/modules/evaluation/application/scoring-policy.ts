@@ -41,6 +41,11 @@ export interface ScoredTask {
   /** Số lần chậm và số lần chưa đạt (0 với dòng nhập tay). */
   lateCount: number;
   reworkCount: number;
+  /**
+   * Việc đột xuất, phát sinh ngoài kế hoạch (Nghị định 335/2025 Điều 18.1.d, ADR-046): tính ngoài số nhiệm vụ giao ban đầu,
+   * nghĩa là không vào mẫu số, nhưng phần hoàn thành được cộng vào tử số của a, b, c.
+   */
+  extra?: boolean;
 }
 
 /** Ba tiêu chí của cán bộ lãnh đạo, quản lý (Điều 15.3): d, đ, e. Mỗi tiêu chí đạt 100% hoặc 50%. */
@@ -96,9 +101,13 @@ const remaining = (occurrences: number, params: ScoringParams) => Math.max(0, 1 
  * Dòng chưa đánh giá chất lượng thì không có SL đạt.
  * Lãnh đạo, quản lý đã chấm d, đ, e: KPI = (a + b + c + d + đ + e) / 6; còn lại KPI = (a + b + c) / 3.
  * Không có chỉ tiêu nào (tổng giao bằng 0) thì mọi thành phần bằng 0, kể cả d, đ, e.
+ *
+ * Việc đột xuất (`extra`): mẫu số chỉ gồm việc giao ban đầu; phần hoàn thành của việc đột xuất (cũng bị trừ 25% mỗi lần chậm
+ * hoặc sai sót lớn) được cộng vào tử số, nên bù được phần còn thiếu của việc thường. Mỗi thành phần a, b, c vẫn tối đa 100%.
+ * Không có việc thường nào (mẫu số bằng 0) thì không tính được: mọi thành phần bằng 0.
  */
 export function kpiOf(tasks: readonly ScoredTask[], leadership: Leadership | null, isLeader: boolean, params: ScoringParams = DEFAULT_SCORING_PARAMS): KpiBreakdown {
-  const planned = tasks.reduce((sum, t) => sum + t.coefficient * t.plannedQuantity, 0);
+  const planned = tasks.reduce((sum, t) => (t.extra ? sum : sum + t.coefficient * t.plannedQuantity), 0);
   if (planned <= 0) return { quantity: 0, quality: 0, timeliness: 0, leadership: null, kpi: 0 };
 
   let done = 0;
@@ -112,9 +121,9 @@ export function kpiOf(tasks: readonly ScoredTask[], leadership: Leadership | nul
     timelyAdjusted += value * remaining(t.lateCount, params);
   }
 
-  const quantity = done / planned;
-  const quality = qualityAdjusted / planned;
-  const timeliness = timelyAdjusted / planned;
+  const quantity = Math.min(1, done / planned);
+  const quality = Math.min(1, qualityAdjusted / planned);
+  const timeliness = Math.min(1, timelyAdjusted / planned);
   const scored = isLeader && leadership ? leadership : null;
   const parts = scored ? [quantity, quality, timeliness, scored.unitResult, scored.organizing, scored.solidarity] : [quantity, quality, timeliness];
   return {

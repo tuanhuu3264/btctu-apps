@@ -3,7 +3,7 @@ import { CurrentAccount, RequirePermission } from '../../security/index.js';
 import type { CurrentAccountModel } from '../../security/index.js';
 import { CatalogService } from '../application/catalog.service.js';
 import type { CatalogGroupModel, CatalogItemModel, CatalogTaskModel, CatalogVersionModel, CatalogVersionView } from '../application/catalog.model.js';
-import { AddItemDto, ApproveVersionDto, CreateCatalogTaskDto, CreateGroupDto, CreateVersionDto, ScopeDto, SetBaselineDto, UpdateCatalogTaskDto, UpdateGroupDto, UpdateItemDto, UpdateVersionDto } from './catalog.dto.js';
+import { AddItemDto, ApproveVersionDto, CreateCatalogTaskDto, CreateGroupDto, CreateVersionDto, DeactivateCatalogDto, ScopeDto, SetBaselineDto, UpdateCatalogTaskDto, UpdateGroupDto, UpdateItemDto, UpdateVersionDto } from './catalog.dto.js';
 
 /** Bỏ các khóa undefined (DTO khai báo thuộc tính nên khóa luôn tồn tại) để cập nhật một phần không ghi đè. */
 function definedOnly<T extends object>(dto: T): Partial<T> {
@@ -79,11 +79,18 @@ export class CatalogController {
     return this.catalog.updateTask(id, definedOnly(dto));
   }
 
+  /** "Xóa" nhiệm vụ của bản nháp: đổi sang INACTIVE, không xóa dòng (PLAN-A A1.6). */
   @Delete('tasks/:id')
-  @HttpCode(204)
   @RequirePermission('catalog:manage')
-  deleteTask(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    return this.catalog.deleteTask(id);
+  deleteTask(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DeactivateCatalogDto): Promise<CatalogTaskModel> {
+    return this.catalog.deactivateTask(id, dto?.reason);
+  }
+
+  @Post('tasks/:id/reactivate')
+  @HttpCode(200)
+  @RequirePermission('catalog:manage')
+  reactivateTask(@Param('id', ParseUUIDPipe) id: string): Promise<CatalogTaskModel> {
+    return this.catalog.reactivateTask(id);
   }
 
   @Post('versions/:id/items')
@@ -128,10 +135,17 @@ export class CatalogController {
     return this.catalog.updateItem(id, definedOnly(dto));
   }
 
+  /** "Xóa" công việc của bản nháp: đổi sang INACTIVE, không xóa dòng (PLAN-A A1.6). */
   @Delete('items/:id')
-  @HttpCode(204)
   @RequirePermission('catalog:manage')
-  deleteItem(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    return this.catalog.deleteItem(id);
+  deleteItem(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DeactivateCatalogDto): Promise<CatalogItemModel> {
+    return this.catalog.deactivateItem(id, dto?.reason);
+  }
+
+  @Post('items/:id/reactivate')
+  @HttpCode(200)
+  @RequirePermission('catalog:manage')
+  reactivateItem(@Param('id', ParseUUIDPipe) id: string): Promise<CatalogItemModel> {
+    return this.catalog.reactivateItem(id);
   }
 }

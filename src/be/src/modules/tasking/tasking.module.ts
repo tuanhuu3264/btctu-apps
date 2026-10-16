@@ -14,12 +14,16 @@ import {
   FileStorage,
   OrgDirectory,
   ProgressRepository,
+  RecurringTemplateRepository,
   WorkTaskRepository,
 } from './application/tasking.ports.js';
+import { RecurringRunner } from './application/recurring.runner.js';
+import { RecurringService } from './application/recurring.service.js';
 import { TaskingService } from './application/tasking.service.js';
 import { CatalogDirectoryAdapter, OrganizationDirectoryAdapter } from './data-access/directories.js';
 import { S3FileStorage } from './data-access/s3-file-storage.js';
 import {
+  RecurringTemplateEntity,
   WorkAssignmentEntity,
   WorkAttachmentEntity,
   WorkCommentEntity,
@@ -33,21 +37,25 @@ import {
   TypeOrmCommentRepository,
   TypeOrmConsultantRepository,
   TypeOrmProgressRepository,
+  TypeOrmRecurringTemplateRepository,
   TypeOrmWorkTaskRepository,
 } from './data-access/typeorm-tasking.repositories.js';
 import { TaskingController } from './presentation/tasking.controller.js';
 
 /** Giao việc, báo cáo hoàn thành, cấp trên xác nhận (ADR-016). */
 @Module({
-  imports: [TypeOrmModule.forFeature([WorkTaskEntity, WorkAssignmentEntity, WorkProgressEntity, WorkConsultantEntity, WorkCommentEntity, WorkAttachmentEntity]), SecurityModule, OrganizationModule, CatalogModule],
+  imports: [TypeOrmModule.forFeature([WorkTaskEntity, WorkAssignmentEntity, WorkProgressEntity, WorkConsultantEntity, WorkCommentEntity, WorkAttachmentEntity, RecurringTemplateEntity]), SecurityModule, OrganizationModule, CatalogModule],
   controllers: [TaskingController],
   providers: [
     TaskingService,
     CollaborationService,
+    RecurringService,
+    RecurringRunner,
     { provide: Clock, useClass: SystemClock },
     { provide: AssignmentRepository, useClass: TypeOrmAssignmentRepository },
     { provide: ProgressRepository, useClass: TypeOrmProgressRepository },
     { provide: WorkTaskRepository, useClass: TypeOrmWorkTaskRepository },
+    { provide: RecurringTemplateRepository, useClass: TypeOrmRecurringTemplateRepository },
     { provide: ConsultantRepository, useClass: TypeOrmConsultantRepository },
     { provide: CommentRepository, useClass: TypeOrmCommentRepository },
     { provide: AttachmentRepository, useClass: TypeOrmAttachmentRepository },

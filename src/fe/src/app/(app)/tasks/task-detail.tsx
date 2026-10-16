@@ -4,11 +4,12 @@ import { EditOutlined, PaperClipOutlined, SendOutlined } from '@ant-design/icons
 import { App, Alert, Button, Checkbox, Descriptions, Drawer, Empty, Form, Input, Modal, Select, Space, Spin, Table, Tabs, Tag, Typography, Upload } from 'antd';
 import type { UploadFile } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AssignmentView, Conversation, OrgUnit, WorkAttachment, WorkComment, WorkProgress } from '@/lib/api';
+import type { AssignmentView, Conversation, Okr, OrgUnit, WorkAttachment, WorkComment, WorkProgress } from '@/lib/api';
 import FileLink from '@/components/file-link';
 import { API_URL, apiCall, apiGet, apiUpload } from '@/lib/client';
-import { dateText, dateTimeText, fileSizeText, PROGRESS_LABELS, REPORT_KIND_LABELS, STATE_COLORS, STATE_LABELS } from '@/lib/labels';
-import { holderLabel, holdersOf, superiorsOf } from '@/lib/org';
+import { dateText, dateTimeText, fileSizeText, positionIndex, PROGRESS_LABELS, REPORT_KIND_LABELS, STATE_COLORS, STATE_LABELS } from '@/lib/labels';
+import { holderLabel, holdersOf, superiorsOf, uniqueByPerson } from '@/lib/org';
+import { ApproveProposalModal, RejectProposalModal } from './ad-hoc-modals';
 
 const ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.png,.jpg,.jpeg';
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -31,19 +32,26 @@ const downloadUrl = (assignmentId: string, file: WorkAttachment) => `${API_URL}/
 /** Hộp thoại sửa nội dung, người duyệt (cc) và người tham vấn. Chỉ được dựng khi đang mở. */
 function ParticipantsModal({ view, tree, onClose, onSaved }: { view: AssignmentView; tree: OrgUnit[]; onClose: () => void; onSaved: (v: AssignmentView) => void }) {
   const { message } = App.useApp();
-  const [form] = Form.useForm<{ note?: string; approverPersonId?: string; consultantPersonIds?: string[] }>();
+  const [form] = Form.useForm<{ note?: string; approverPersonId?: string; consultantPersonIds?: string[]; keyResult?: string }>();
   const [busy, setBusy] = useState(false);
   const assignee = view.assignment.assigneePersonId;
-  const superiors = useMemo(() => superiorsOf(tree, assignee), [tree, assignee]);
-  const everyone = useMemo(() => holdersOf(tree).filter((h) => h.personId !== assignee), [tree, assignee]);
+  const initialKeyResult = view.assignment.okrKeyResult ? view.assignment.okrKeyResult.split(':')[0] : undefined;
+  const [okr, setOkr] = useState<Okr | null>(null);
+  useEffect(() => {
+    apiGet<Okr>(`/tasking/okr/${assignee}`).then(setOkr).catch(() => setOkr(null));
+  }, [assignee]);
+  const superiors = useMemo(() => superiorsOf(tree, assignee, view.assignment.positionId ?? undefined), [tree, assignee, view.assignment.positionId]);
+  const everyone = useMemo(() => uniqueByPerson(holdersOf(tree)).filter((h) => h.personId !== assignee), [tree, assignee]);
 
-  async function submit(v: { note?: string; approverPersonId?: string; consultantPersonIds?: string[] }) {
+  async function submit(v: { note?: string; approverPersonId?: string; consultantPersonIds?: string[]; keyResult?: string }) {
     setBusy(true);
     try {
       const updated = await apiCall<AssignmentView>('PATCH', `/tasking/assignments/${view.assignment.id}`, {
         note: v.note?.trim() || null,
         approverPersonId: v.approverPersonId ?? null,
         consultantPersonIds: v.consultantPersonIds ?? [],
+        // Chỉ gửi khi đổi, vì mã cũ có thể không còn trong OKR hiện tại của người nhận.
+        ...(v.keyResult !== initialKeyResult ? { keyResult: v.keyResult ?? null } : {}),
       });
       message.success('Đã lưu');
       if (updated) onSaved(updated);
@@ -61,7 +69,7 @@ function ParticipantsModal({ view, tree, onClose, onSaved }: { view: AssignmentV
         form={form}
         layout="vertical"
         onFinish={submit}
-        initialValues={{ note: view.assignment.note ?? undefined, approverPersonId: view.approverPersonId ?? undefined, consultantPersonIds: view.consultantPersonIds }}
+        initialValues={{ note: view.assignment.note ?? undefined, approverPersonId: view.approverPersonId ?? undefined, consultantPersonIds: view.consultantPersonIds, keyResult: initialKeyResult }}
       >
         <Form.Item name="note" label="Nội dung">
           <Input.TextArea rows={5} maxLength={MAX_TEXT} showCount />
@@ -75,6 +83,11 @@ function ParticipantsModal({ view, tree, onClose, onSaved }: { view: AssignmentV
             options={superiors.map((h, i) => ({ value: h.personId, label: `${holderLabel(h)}${i === 0 ? ' (cấp trên trực tiếp)' : ''}` }))}
           />
         </Form.Item>
+        {okr && okr.keyResults.length > 0 && (
+          <Form.Item name="keyResult" label="Kết quả then chốt (OKR) của người nhận" extra="Chỉ để theo dõi tiến độ, không ảnh hưởng điểm.">
+            <Select allowClear placeholder="Không gắn" options={okr.keyResults.map((k) => ({ value: k.code, label: `${k.code}: ${k.text}` }))} />
+          </Form.Item>
+        )}
         <Form.Item name="consultantPersonIds" label="Người tham vấn" extra="Tối đa 10 người. Họ xem được việc, trao đổi và góp ý.">
           <Select mode="multiple" allowClear showSearch optionFilterProp="label" maxCount={10} placeholder="Chọn người tham vấn" options={everyone.map((h) => ({ value: h.personId, label: holderLabel(h) }))} />
         </Form.Item>
@@ -83,11 +96,32 @@ function ParticipantsModal({ view, tree, onClose, onSaved }: { view: AssignmentV
   );
 }
 
-function InfoTab({ view, names, canEdit, onEdit }: { view: AssignmentView; names: Record<string, string>; canEdit: boolean; onEdit: () => void }) {
+function InfoTab({ view, names, positionLabel, canEdit, onEdit, onDecided }: { view: AssignmentView; names: Record<string, string>; positionLabel: string | null; canEdit: boolean; onEdit: () => void; onDecided: (v: AssignmentView) => void }) {
   const a = view.assignment;
+  const [deciding, setDeciding] = useState<'approve' | 'reject' | null>(null);
   const nameOf = (id: string | null) => (id ? (names[id] ?? 'Không rõ') : '–');
   return (
     <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+      {canEdit && a.status === 'PROPOSED' && (
+        <Alert
+          type="warning"
+          showIcon
+          message="Cán bộ đề xuất việc đột xuất này, chờ bạn duyệt"
+          description="Duyệt thì chọn mức độ khó (hệ số quy đổi); chưa duyệt thì việc chưa tính vào hồ sơ kỳ."
+          action={
+            <Space>
+              <Button type="primary" size="small" onClick={() => setDeciding('approve')}>
+                Duyệt
+              </Button>
+              <Button danger size="small" onClick={() => setDeciding('reject')}>
+                Từ chối
+              </Button>
+            </Space>
+          }
+        />
+      )}
+      {deciding === 'approve' && <ApproveProposalModal view={view} onClose={() => setDeciding(null)} onDone={onDecided} />}
+      {deciding === 'reject' && <RejectProposalModal view={view} onClose={() => setDeciding(null)} onDone={onDecided} />}
       {canEdit && a.status === 'OPEN' && (
         <Button icon={<EditOutlined />} onClick={onEdit}>
           Sửa nội dung, người duyệt, người tham vấn
@@ -100,9 +134,26 @@ function InfoTab({ view, names, canEdit, onEdit }: { view: AssignmentView; names
         labelStyle={{ width: 170 }}
         items={[
           { key: 'task', label: 'Nhiệm vụ', children: view.task.title || '–' },
-          { key: 'item', label: 'Công việc', children: <><strong>{a.catalogItemCode}</strong> {view.itemName}</> },
+          ...(positionLabel ? [{ key: 'position', label: 'Vị trí', children: positionLabel }] : []),
+          {
+            key: 'item',
+            label: 'Công việc',
+            children:
+              a.source === 'AD_HOC' ? (
+                <>
+                  <Tag color="magenta">Đột xuất · mức {view.adHocLevel}</Tag> {view.itemName}{' '}
+                  <span style={{ color: '#888' }}>(hệ số {view.coefficient}; tính ngoài số giao ban đầu, được tính thêm điểm)</span>
+                </>
+              ) : (
+                <>
+                  <strong>{a.catalogItemCode}</strong> {view.itemName}
+                </>
+              ),
+          },
+          ...(a.recurringTemplateId ? [{ key: 'recurring', label: 'Việc định kỳ', children: <>Sinh tự động theo mẫu, lần lặp {dateText(a.recurringKey!)}</> }] : []),
           { key: 'note', label: 'Nội dung', children: <div style={{ whiteSpace: 'pre-wrap' }}>{a.note ?? '–'}</div> },
           { key: 'assignee', label: 'Cán bộ nhận việc', children: nameOf(a.assigneePersonId) },
+          { key: 'okr', label: 'Kết quả then chốt (OKR)', children: a.okrKeyResult ?? '–' },
           { key: 'created', label: 'Ngày giao', children: dateTimeText(a.createdAt) },
           { key: 'due', label: 'Hạn hoàn thành', children: dateText(a.dueDate) },
           {
@@ -387,10 +438,10 @@ export default function TaskDetail({ view: initial, tree, names, myPersonId, can
   );
 
   return (
-    <Drawer title={`${view.assignment.catalogItemCode} ${view.itemName}`} open onClose={onClose} size={760} destroyOnHidden>
+    <Drawer title={view.assignment.source === 'AD_HOC' ? `Đột xuất: ${view.itemName}` : `${view.assignment.catalogItemCode} ${view.itemName}`} open onClose={onClose} size={760} destroyOnHidden>
       <Tabs
         items={[
-          { key: 'info', label: 'Thông tin', children: <InfoTab view={view} names={names} canEdit={canEdit} onEdit={() => setEditing(true)} /> },
+          { key: 'info', label: 'Thông tin', children: <InfoTab view={view} names={names} positionLabel={view.assignment.positionId ? (() => { const x = positionIndex(tree).get(view.assignment.positionId); return x ? `${x.title}, ${x.unitName}` : null; })() : null} canEdit={canEdit} onEdit={() => setEditing(true)} onDecided={(v) => { setView(v); onChanged(); }} /> },
           { key: 'chat', label: `Trao đổi${conv ? ` (${conv.comments.length})` : ''}`, children: conversationNode },
           {
             key: 'files',

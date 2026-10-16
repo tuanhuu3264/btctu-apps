@@ -1,4 +1,4 @@
-import type { NewUnit, UnitModel, UnitPatch } from './unit.model.js';
+import type { InactiveInfo, NewUnit, UnitModel, UnitPatch } from './unit.model.js';
 
 /**
  * Cổng truy cập dữ liệu của lớp nghiệp vụ. Là abstract class để dùng làm token
@@ -10,6 +10,6 @@ export abstract class UnitRepository {
   abstract findByCode(code: string): Promise<UnitModel | null>;
   abstract create(data: NewUnit): Promise<UnitModel>;
   abstract update(id: string, patch: UnitPatch): Promise<UnitModel>;
-  /** IN_USE: còn đơn vị con, vị trí hay phạm vi công việc trỏ tới nên không xóa được. */
-  abstract delete(id: string): Promise<'OK' | 'IN_USE'>;
+  /** Đổi trạng thái (không xóa dòng). Kích hoạt lại thì truyền `inactiveAt`, `inactiveReason` là null. */
+  abstract setStatus(id: string, info: InactiveInfo): Promise<UnitModel>;
 }

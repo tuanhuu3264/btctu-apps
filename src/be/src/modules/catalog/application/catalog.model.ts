@@ -9,6 +9,15 @@ export const ITEM_CODE_PATTERN = /^[A-Z]\.\d{3}$/;
 /** Tên nhiệm vụ mặc định của mỗi nhóm: nơi chứa công việc khi chưa phân nhiệm vụ (ADR-019). */
 export const DEFAULT_TASK_NAME = 'Chưa phân nhiệm vụ';
 
+/** Nhiệm vụ và công việc không bị xóa dòng: "xóa" chỉ chuyển sang INACTIVE (PLAN-A A1.6). */
+export type CatalogStatus = 'ACTIVE' | 'INACTIVE';
+
+export interface CatalogInactiveInfo {
+  status: CatalogStatus;
+  inactiveAt: Date | null;
+  inactiveReason: string | null;
+}
+
 export interface CatalogGroupModel {
   code: string;
   name: string;
@@ -38,7 +47,7 @@ export type DurationMode = 'LIMITED' | 'ACTUAL' | 'UNSPECIFIED';
 export type DurationUnit = 'HOUR' | 'DAY';
 
 /** Nhiệm vụ của danh mục: tầng giữa Nhóm → Nhiệm vụ → Công việc (ADR-019). */
-export interface CatalogTaskModel {
+export interface CatalogTaskModel extends CatalogInactiveInfo {
   id: string;
   versionId: string;
   groupCode: string;
@@ -46,14 +55,14 @@ export interface CatalogTaskModel {
   description: string | null;
   sortOrder: number;
 }
-export type NewCatalogTask = Omit<CatalogTaskModel, 'id'>;
+export type NewCatalogTask = Omit<CatalogTaskModel, 'id' | keyof CatalogInactiveInfo>;
 export type CatalogTaskPatch = Partial<Pick<CatalogTaskModel, 'name' | 'description'>>;
 
 export interface CatalogTaskView extends CatalogTaskModel {
   itemCount: number;
 }
 
-export interface CatalogItemModel {
+export interface CatalogItemModel extends CatalogInactiveInfo {
   id: string;
   versionId: string;
   /** Nhiệm vụ chứa công việc; cùng phiên bản và cùng nhóm. */
@@ -72,9 +81,9 @@ export interface CatalogItemModel {
   explanation: string | null;
   sortOrder: number;
 }
-export type NewCatalogItem = Omit<CatalogItemModel, 'id'>;
+export type NewCatalogItem = Omit<CatalogItemModel, 'id' | keyof CatalogInactiveInfo>;
 export type CatalogItemPatch = Partial<
-  Omit<CatalogItemModel, 'id' | 'versionId' | 'code' | 'groupCode'>
+  Omit<CatalogItemModel, 'id' | 'versionId' | 'code' | 'groupCode' | keyof CatalogInactiveInfo>
 >;
 
 /** Hệ số quy đổi = điểm chấm / điểm của công việc chuẩn. Rỗng nếu thiếu một trong hai. */

@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import type {
   CatalogGroupModel,
+  CatalogInactiveInfo,
   CatalogItemModel,
   CatalogItemPatch,
   CatalogScope,
@@ -105,7 +106,7 @@ export class TypeOrmCatalogTaskRepository extends CatalogTaskRepository {
   }
 
   async create(data: NewCatalogTask): Promise<CatalogTaskModel> {
-    return toTask(await this.repo.save(this.repo.create(data)));
+    return toTask(await this.repo.save(this.repo.create({ ...data, status: 'ACTIVE', inactiveAt: null, inactiveReason: null })));
   }
 
   countByGroup(groupCode: string): Promise<number> {
@@ -117,8 +118,9 @@ export class TypeOrmCatalogTaskRepository extends CatalogTaskRepository {
     return toTask(await this.repo.findOneByOrFail({ id }));
   }
 
-  async delete(id: string): Promise<void> {
-    await this.repo.delete({ id });
+  async setStatus(id: string, info: CatalogInactiveInfo): Promise<CatalogTaskModel> {
+    await this.repo.update({ id }, info);
+    return toTask(await this.repo.findOneByOrFail({ id }));
   }
 }
 
@@ -172,7 +174,7 @@ export class TypeOrmCatalogItemRepository extends CatalogItemRepository {
   }
 
   async create(data: NewCatalogItem): Promise<CatalogItemModel> {
-    return toItem(await this.repo.save(this.repo.create(data)));
+    return toItem(await this.repo.save(this.repo.create({ ...data, status: 'ACTIVE', inactiveAt: null, inactiveReason: null })));
   }
 
   countByGroup(groupCode: string): Promise<number> {
@@ -184,8 +186,9 @@ export class TypeOrmCatalogItemRepository extends CatalogItemRepository {
     return toItem(await this.repo.findOneByOrFail({ id }));
   }
 
-  async delete(id: string): Promise<void> {
-    await this.repo.delete({ id });
+  async setStatus(id: string, info: CatalogInactiveInfo): Promise<CatalogItemModel> {
+    await this.repo.update({ id }, info);
+    return toItem(await this.repo.findOneByOrFail({ id }));
   }
 }
 
@@ -208,6 +211,9 @@ const toTask = (e: CatalogTaskEntity): CatalogTaskModel => ({
   name: e.name,
   description: e.description,
   sortOrder: e.sortOrder,
+  status: e.status,
+  inactiveAt: e.inactiveAt,
+  inactiveReason: e.inactiveReason,
 });
 
 const toItem = (e: CatalogItemEntity): CatalogItemModel => ({
@@ -225,4 +231,7 @@ const toItem = (e: CatalogItemEntity): CatalogItemModel => ({
   points: e.points,
   explanation: e.explanation,
   sortOrder: e.sortOrder,
+  status: e.status,
+  inactiveAt: e.inactiveAt,
+  inactiveReason: e.inactiveReason,
 });

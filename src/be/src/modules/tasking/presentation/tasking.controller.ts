@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, Res, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
+import type { ParsedOkr } from '../../organization/index.js';
+import { BadRequestException, Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query, Res, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { AuthorizationService, CurrentAccount, RequirePermission } from '../../security/index.js';
@@ -12,9 +13,29 @@ import type { AssignmentModel, AttachmentModel, CommentModel, ProgressModel, Wor
 /** Tệp đính kèm trả cho trình duyệt: không lộ khóa lưu trữ nội bộ. */
 type PublicAttachment = Omit<AttachmentModel, 'storageKey'>;
 const toPublicAttachment = ({ storageKey: _storageKey, ...rest }: AttachmentModel): PublicAttachment => rest;
+import type { TaskStatistics } from '../application/task-report.js';
 import { TaskingService } from '../application/tasking.service.js';
 import type { AssignmentView, SearchResult } from '../application/tasking.service.js';
-import { AssignDto, CommentDto, CreateTaskDto, DecisionDto, FileSearchQueryDto, ListQueryDto, ReportDto, SearchQueryDto, UpdateAssignmentDto, UploadDto } from './tasking.dto.js';
+import { RecurringService } from '../application/recurring.service.js';
+import type { RunResult, TemplateView } from '../application/recurring.service.js';
+import {
+  ApproveProposalDto,
+  AssignDto,
+  CommentDto,
+  CreateRecurringDto,
+  CreateTaskDto,
+  DecisionDto,
+  FileSearchQueryDto,
+  ListQueryDto,
+  ProposeDto,
+  RejectProposalDto,
+  ReportDto,
+  ExportAssignmentsQueryDto,
+  SearchQueryDto,
+  UpdateAssignmentDto,
+  UpdateRecurringDto,
+  UploadDto,
+} from './tasking.dto.js';
 
 /** Phần của tệp do multer đọc (lưu trong bộ nhớ) mà controller dùng. */
 interface UploadedMulterFile {
@@ -28,6 +49,7 @@ export class TaskingController {
   constructor(
     private readonly tasking: TaskingService,
     private readonly collaboration: CollaborationService,
+    private readonly recurring: RecurringService,
     private readonly authorization: AuthorizationService,
   ) {}
 
@@ -57,6 +79,27 @@ export class TaskingController {
     return this.tasking.list(actor, query.scope ?? 'mine', await this.canReadAll(actor));
   }
 
+  /** Xuất danh sách việc theo bộ lọc ra Excel hoặc PDF, kèm thống kê (PLAN-A A6). Đặt trước `assignments/:id`. */
+  @Get('assignments/export')
+  @RequirePermission('task:read')
+  async exportAssignments(
+    @CurrentAccount() actor: CurrentAccountModel,
+    @Query() query: ExportAssignmentsQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { format, ...filter } = query;
+    const file = await this.tasking.exportAssignments(actor, { ...filter, scope: filter.scope ?? 'mine' }, await this.canReadAll(actor), format);
+    res.set({ 'Content-Type': file.contentType, 'Content-Disposition': `attachment; filename="${file.filename}"`, 'Cache-Control': 'no-store' });
+    return new StreamableFile(file.buffer);
+  }
+
+  /** Thống kê việc theo bộ lọc: theo trạng thái, tỷ lệ chậm và chưa đạt, theo đơn vị. Đặt trước `assignments/:id`. */
+  @Get('assignments/statistics')
+  @RequirePermission('task:read')
+  async statistics(@CurrentAccount() actor: CurrentAccountModel, @Query() query: SearchQueryDto): Promise<TaskStatistics> {
+    return this.tasking.statistics(actor, { ...query, scope: query.scope ?? 'mine' }, await this.canReadAll(actor));
+  }
+
   /**
    * Theo dõi việc có lọc và phân trang (ADR-024). `scope`: mine, team, all, consulted (được tham vấn), approving (chờ tôi duyệt),
    * assigned (tôi đã giao). Đặt trước `assignments/:id` để "search" không bị hiểu là mã.
@@ -74,10 +117,80 @@ export class TaskingController {
     return this.collaboration.searchFiles(actor, query, await this.canReadAll(actor));
   }
 
+  /** Mục tiêu và kết quả then chốt (OKR) của vị trí cán bộ: chính họ, cấp trên, hoặc người xem toàn bộ (ADR-034). */
+  @Get('okr/:personId')
+  @RequirePermission('task:read')
+  async okr(@CurrentAccount() actor: CurrentAccountModel, @Param('personId', ParseUUIDPipe) personId: string): Promise<ParsedOkr> {
+    // Vị trí chưa có OKR trả về cấu trúc rỗng (không trả null để phản hồi luôn là JSON hợp lệ).
+    return (await this.tasking.okrOf(actor, personId, await this.canReadAll(actor))) ?? { raw: '', objective: null, keyResults: [] };
+  }
+
   @Post('assignments')
   @RequirePermission('task:assign')
   assign(@CurrentAccount() actor: CurrentAccountModel, @Body() dto: AssignDto): Promise<AssignmentView> {
     return this.tasking.assign(actor, dto);
+  }
+
+  /** Cán bộ đề xuất việc đột xuất cho chính mình; chờ cấp trên trực tiếp duyệt (ADR-046). */
+  @Post('proposals')
+  @RequirePermission('task:report')
+  propose(@CurrentAccount() actor: CurrentAccountModel, @Body() dto: ProposeDto): Promise<AssignmentView> {
+    return this.tasking.propose(actor, dto);
+  }
+
+  @Post('assignments/:id/proposal/approve')
+  @HttpCode(200)
+  @RequirePermission('task:assign')
+  approveProposal(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ApproveProposalDto): Promise<AssignmentView> {
+    return this.tasking.approveProposal(actor, id, dto);
+  }
+
+  @Post('assignments/:id/proposal/reject')
+  @HttpCode(200)
+  @RequirePermission('task:assign')
+  rejectProposal(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectProposalDto): Promise<AssignmentView> {
+    return this.tasking.rejectProposal(actor, id, dto.reason);
+  }
+
+  /** Mẫu việc lặp định kỳ do mình tạo hoặc của cấp dưới trực tiếp (ADR-046). */
+  @Get('recurring')
+  @RequirePermission('task:read')
+  async listRecurring(@CurrentAccount() actor: CurrentAccountModel): Promise<TemplateView[]> {
+    return this.recurring.list(actor, await this.canReadAll(actor));
+  }
+
+  @Post('recurring')
+  @RequirePermission('task:assign')
+  createRecurring(@CurrentAccount() actor: CurrentAccountModel, @Body() dto: CreateRecurringDto): Promise<TemplateView> {
+    return this.recurring.create(actor, dto);
+  }
+
+  /** Sinh ngay các việc đã đến hạn của các mẫu mình quản lý (hệ thống cũng tự chạy định kỳ). Đặt trước `recurring/:id`. */
+  @Post('recurring/run')
+  @HttpCode(200)
+  @RequirePermission('task:assign')
+  async runRecurring(@CurrentAccount() actor: CurrentAccountModel): Promise<RunResult> {
+    return this.recurring.runNow(actor, await this.canReadAll(actor));
+  }
+
+  @Patch('recurring/:id')
+  @RequirePermission('task:assign')
+  updateRecurring(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateRecurringDto): Promise<TemplateView> {
+    return this.recurring.update(actor, id, dto);
+  }
+
+  @Post('recurring/:id/deactivate')
+  @HttpCode(200)
+  @RequirePermission('task:assign')
+  deactivateRecurring(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<TemplateView> {
+    return this.recurring.deactivate(actor, id);
+  }
+
+  @Post('recurring/:id/reactivate')
+  @HttpCode(200)
+  @RequirePermission('task:assign')
+  reactivateRecurring(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<TemplateView> {
+    return this.recurring.reactivate(actor, id);
   }
 
   @Get('assignments/:id')

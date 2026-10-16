@@ -36,6 +36,8 @@ export abstract class RoleAssignmentRepository {
   /** Toàn bộ gán vai trò của tài khoản, kể cả đã thu hồi hoặc hết hạn (lịch sử). */
   abstract findByAccount(accountId: string): Promise<RoleAssignmentModel[]>;
   abstract revoke(id: string, at: Date): Promise<void>;
+  /** Mọi gán vai trò chưa thu hồi và chưa hết hạn tại `at` (kể cả chưa bắt đầu), của mọi tài khoản. */
+  abstract findLive(at: Date): Promise<RoleAssignmentModel[]>;
 }
 
 export abstract class AuditLogRepository {
@@ -46,6 +48,8 @@ export abstract class AuditLogRepository {
   abstract append(build: (prevHash: string) => AuditRecordDraft): Promise<AuditRecord>;
   /** Mới nhất trước. */
   abstract find(query: AuditQuery): Promise<AuditRecord[]>;
+  /** Các hành động đã từng được ghi, để làm bộ lọc. */
+  abstract distinctActions(): Promise<string[]>;
   /** Tăng dần theo id, để kiểm tra chuỗi băm theo lô. */
   abstract findAfter(afterId: string | null, limit: number): Promise<AuditRecord[]>;
 }

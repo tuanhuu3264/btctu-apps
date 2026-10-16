@@ -7,5 +7,8 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.e2e-spec.ts'],
+    // Test chạm CSDL thật và băm mật khẩu argon2: mặc định 5 giây dễ hết giờ khi máy bận.
+    testTimeout: 20_000,
+    hookTimeout: 60_000,
   },
 });

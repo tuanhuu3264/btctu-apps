@@ -1,15 +1,20 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
 import { AuthorizationService, CurrentAccount, RequirePermission } from '../../security/index.js';
 import type { CurrentAccountModel } from '../../security/index.js';
 import type { EvaluationModel, PeriodModel, TaskModel } from '../application/evaluation.model.js';
+import type { LeaveMonth } from '../application/leave.js';
 import { EvaluationService } from '../application/evaluation.service.js';
-import type { EvaluationView, GenerateResult } from '../application/evaluation.service.js';
+import { UnitEvaluationService } from '../application/unit-evaluation.service.js';
+import type { EvaluationView, GenerateResult, PeriodView } from '../application/evaluation.service.js';
 import {
   AddTaskDto,
   ApproveEvaluationDto,
   CreateEvaluationDto,
   CreatePeriodDto,
   RecordResultDto,
+  NotRatedDto,
+  SetDeadlineDto,
+  SetLeaveDto,
   ReturnDto,
   ReviewDto,
   SelfSubmitDto,
@@ -19,6 +24,7 @@ import {
 export class EvaluationController {
   constructor(
     private readonly evaluation: EvaluationService,
+    private readonly unitEvaluation: UnitEvaluationService,
     private readonly authorization: AuthorizationService,
   ) {}
 
@@ -31,8 +37,24 @@ export class EvaluationController {
 
   @Get('periods')
   @RequirePermission('evaluation:read')
-  listPeriods(): Promise<PeriodModel[]> {
+  listPeriods(): Promise<PeriodView[]> {
     return this.evaluation.listPeriods();
+  }
+
+  /** Gia hạn hoặc đặt lại hạn hoàn thành đánh giá năm (15/12 đến 15/01 năm sau). */
+  @Put('periods/:id/deadline')
+  @RequirePermission('evaluation:period-manage')
+  setDeadline(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetDeadlineDto): Promise<PeriodView> {
+    return this.evaluation.setDeadline(actor, id, dto.deadline, dto.reason);
+  }
+
+  /** Nhắc người đang giữ hồ sơ cá nhân và tập thể của kỳ năm chưa xong. */
+  @Post('periods/:id/remind')
+  @HttpCode(200)
+  @RequirePermission('evaluation:period-manage')
+  async remind(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<{ persons: number; units: number }> {
+    const [persons, units] = await Promise.all([this.evaluation.remindDeadline(actor, id), this.unitEvaluation.remindDeadline(actor, id)]);
+    return { persons: persons.notified, units: units.notified };
   }
 
   @Post('periods')
@@ -66,13 +88,31 @@ export class EvaluationController {
     @Param('id', ParseUUIDPipe) periodId: string,
     @Body() dto: CreateEvaluationDto,
   ): Promise<EvaluationModel> {
-    return this.evaluation.createEvaluation(actor, periodId, dto.personId);
+    return this.evaluation.createEvaluation(actor, periodId, dto.personId, dto.positionId);
   }
 
   @Get('periods/:id/evaluations')
   @RequirePermission('evaluation:read')
   async list(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) periodId: string): Promise<EvaluationModel[]> {
     return this.evaluation.listEvaluations(actor, periodId, await this.canReadAll(actor));
+  }
+
+  /** Các tháng nghỉ có căn cứ của cán bộ trong năm (ADR-039). */
+  @Get('persons/:personId/leave')
+  @RequirePermission('evaluation:read')
+  async leave(
+    @CurrentAccount() actor: CurrentAccountModel,
+    @Param('personId', ParseUUIDPipe) personId: string,
+    @Query('year', ParseIntPipe) year: number,
+  ): Promise<LeaveMonth[]> {
+    return this.evaluation.leaveOf(actor, personId, year, await this.canReadAll(actor));
+  }
+
+  /** Văn phòng ghi nhận tháng nghỉ ốm, thai sản, nghỉ việc riêng không lương (Điều 11.2). */
+  @Put('persons/:personId/leave')
+  @RequirePermission('evaluation:period-manage')
+  setLeave(@CurrentAccount() actor: CurrentAccountModel, @Param('personId', ParseUUIDPipe) personId: string, @Body() dto: SetLeaveDto): Promise<LeaveMonth[]> {
+    return this.evaluation.setLeave(actor, personId, dto.year, dto.months);
   }
 
   @Get('evaluations/:id')
@@ -120,6 +160,14 @@ export class EvaluationController {
   @RequirePermission('evaluation:review')
   review(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewDto): Promise<EvaluationView> {
     return this.evaluation.review(actor, id, dto);
+  }
+
+  /** Người thẩm định đóng hồ sơ năm là "không xếp loại" khi chưa đủ 6 tháng công tác (Điều 11.1). */
+  @Post('evaluations/:id/not-rated')
+  @HttpCode(200)
+  @RequirePermission('evaluation:review')
+  notRated(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: NotRatedDto): Promise<EvaluationView> {
+    return this.evaluation.closeNotRated(actor, id, dto.comment);
   }
 
   @Post('evaluations/:id/return')

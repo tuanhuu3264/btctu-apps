@@ -1,5 +1,6 @@
 import type {
   CatalogGroupModel,
+  CatalogInactiveInfo,
   CatalogItemModel,
   CatalogItemPatch,
   CatalogScope,
@@ -36,7 +37,8 @@ export abstract class CatalogTaskRepository {
   abstract findByVersion(versionId: string): Promise<CatalogTaskModel[]>;
   abstract create(data: NewCatalogTask): Promise<CatalogTaskModel>;
   abstract update(id: string, patch: CatalogTaskPatch): Promise<CatalogTaskModel>;
-  abstract delete(id: string): Promise<void>;
+  /** Đổi trạng thái (không xóa dòng). */
+  abstract setStatus(id: string, info: CatalogInactiveInfo): Promise<CatalogTaskModel>;
   /** Số nhiệm vụ của nhóm ở mọi phiên bản. */
   abstract countByGroup(groupCode: string): Promise<number>;
 }
@@ -60,7 +62,8 @@ export abstract class CatalogItemRepository {
   abstract findByVersion(versionId: string): Promise<CatalogItemModel[]>;
   abstract create(data: NewCatalogItem): Promise<CatalogItemModel>;
   abstract update(id: string, patch: CatalogItemPatch): Promise<CatalogItemModel>;
-  abstract delete(id: string): Promise<void>;
+  /** Đổi trạng thái (không xóa dòng). */
+  abstract setStatus(id: string, info: CatalogInactiveInfo): Promise<CatalogItemModel>;
   /** Số công việc của nhóm ở mọi phiên bản. */
   abstract countByGroup(groupCode: string): Promise<number>;
 }

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import type { NewRoleAssignment, RoleAssignmentModel } from '../application/authorization.model.js';
 import { RoleAssignmentRepository } from '../application/ports.js';
 import { AccountRoleEntity } from './account-role.entity.js';
@@ -26,6 +26,11 @@ export class TypeOrmRoleAssignmentRepository extends RoleAssignmentRepository {
 
   async revoke(id: string, at: Date): Promise<void> {
     await this.repo.update({ id }, { revokedAt: at });
+  }
+
+  async findLive(at: Date): Promise<RoleAssignmentModel[]> {
+    const rows = await this.repo.find({ where: { revokedAt: IsNull() }, order: { createdAt: 'ASC' } });
+    return rows.filter((r) => r.validTo === null || r.validTo > at).map(toModel);
   }
 }
 

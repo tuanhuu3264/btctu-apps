@@ -1,10 +1,12 @@
 'use client';
 
 import { PlusOutlined, UserAddOutlined } from '@ant-design/icons';
-import { Button, Checkbox, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip } from 'antd';
+import { Button, Checkbox, DatePicker, Form, Input, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Tooltip } from 'antd';
 import { useMemo, useState } from 'react';
-import type { Assignment, OrgUnit, Person } from '@/lib/api';
+import type { Assignment, AssignmentKind, OrgUnit, Person } from '@/lib/api';
 import { apiCall, apiGet } from '@/lib/client';
+import ExportButtons from '@/components/export-buttons';
+import ChangeHistoryButton from '@/components/change-history';
 import { useAction } from '@/lib/use-action';
 import { LEVEL_LABELS } from './organization-view';
 import type { PositionRow } from './organization-view';
@@ -56,7 +58,7 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
   const existingCodes = useMemo(() => new Set(rows.map((r) => r.code)), [rows]);
   const unitCode = (id: string) => units.find((u) => u.id === id)?.code ?? 'DV';
   // Cấp trên phải có cấp nhỏ hơn (ADR-012), nên loại sẵn các vị trí không hợp lệ khỏi danh sách chọn.
-  const superiors = rows.filter((r) => (level == null || r.level < level) && r.id !== position?.id);
+  const superiors = rows.filter((r) => r.status === 'ACTIVE' && (level == null || r.level < level) && r.id !== position?.id);
 
   async function submit(v: PositionValues) {
     const ok = await run(
@@ -109,7 +111,7 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
         }
       >
         <Form.Item name="unitId" label="Đơn vị" rules={[{ required: true, message: 'Chọn đơn vị' }]}>
-          <Select options={units.map((u) => ({ value: u.id, label: u.name }))} />
+          <Select options={units.filter((u) => u.status === 'ACTIVE').map((u) => ({ value: u.id, label: u.name }))} />
         </Form.Item>
         <Form.Item name="title" label="Chức danh" rules={[{ required: true, whitespace: true, message: 'Nhập chức danh' }]}>
           <Input maxLength={160} />
@@ -166,11 +168,11 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
 /** Hộp thoại phân công cán bộ vào một vị trí đang trống. */
 function AssignModal({ position, persons, onClose }: { position: PositionRow; persons: Person[]; onClose: () => void }) {
   const { run, busy } = useAction();
-  const [form] = Form.useForm<{ personId: string; validFrom?: { toISOString: () => string } }>();
+  const [form] = Form.useForm<{ personId: string; kind: AssignmentKind; validFrom?: { toISOString: () => string } }>();
 
-  async function submit(v: { personId: string; validFrom?: { toISOString: () => string } }) {
+  async function submit(v: { personId: string; kind: AssignmentKind; validFrom?: { toISOString: () => string } }) {
     const ok = await run(
-      async () => void (await apiCall('POST', `/positions/${position.id}/assignments`, { personId: v.personId, ...(v.validFrom ? { validFrom: v.validFrom.toISOString() } : {}) })),
+      async () => void (await apiCall('POST', `/positions/${position.id}/assignments`, { personId: v.personId, kind: v.kind, ...(v.validFrom ? { validFrom: v.validFrom.toISOString() } : {}) })),
       { success: 'Đã phân công' },
     );
     if (ok) onClose();
@@ -178,9 +180,16 @@ function AssignModal({ position, persons, onClose }: { position: PositionRow; pe
 
   return (
     <Modal title={`Phân công vào vị trí: ${position.title} – ${position.unitName}`} open onCancel={onClose} onOk={() => form.submit()} okText="Phân công" cancelText="Hủy" confirmLoading={busy}>
-      <Form form={form} layout="vertical" onFinish={submit}>
+      <Form form={form} layout="vertical" onFinish={submit} initialValues={{ kind: 'PRIMARY' }}>
         <Form.Item name="personId" label="Cán bộ" rules={[{ required: true, message: 'Chọn cán bộ' }]}>
           <Select showSearch optionFilterProp="label" placeholder="Chọn cán bộ" options={persons.filter((p) => p.active).map((p) => ({ value: p.id, label: p.fullName }))} />
+        </Form.Item>
+        <Form.Item
+          name="kind"
+          label="Loại phân công"
+          extra="Mỗi cán bộ có một vị trí chính. Kiêm nhiệm là giữ thêm vị trí này song song: cán bộ có phiếu đánh giá và điểm riêng cho từng vị trí, không gộp điểm."
+        >
+          <Radio.Group options={[{ value: 'PRIMARY', label: 'Vị trí chính' }, { value: 'CONCURRENT', label: 'Kiêm nhiệm' }]} />
         </Form.Item>
         <Form.Item name="validFrom" label="Từ ngày" extra="Để trống nếu bắt đầu từ bây giờ">
           <DatePicker format="DD/MM/YYYY" />
@@ -194,9 +203,10 @@ interface Props {
   rows: PositionRow[];
   units: OrgUnit[];
   persons: Person[];
+  canAudit?: boolean;
 }
 
-export default function PositionsTab({ rows, units, persons }: Props) {
+export default function PositionsTab({ rows, units, persons, canAudit = false }: Props) {
   const { run, busy } = useAction();
   /** undefined: đóng; null: thêm mới; PositionRow: sửa. */
   const [editing, setEditing] = useState<PositionRow | null | undefined>(undefined);
@@ -223,7 +233,8 @@ export default function PositionsTab({ rows, units, persons }: Props) {
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing(null)}>
           Thêm vị trí
         </Button>
-        <Select allowClear style={{ width: 280 }} placeholder="Lọc theo đơn vị" value={filter} onChange={setFilter} options={units.map((u) => ({ value: u.id, label: u.name }))} />
+        <Select allowClear style={{ width: 280 }} placeholder="Lọc theo đơn vị" value={filter} onChange={setFilter} options={units.map((u) => ({ value: u.id, label: u.status === 'ACTIVE' ? u.name : `${u.name} (ngừng)` }))} />
+        <ExportButtons path="/org/export?list=positions&includeInactive=true" />
       </Space>
 
       <Table<PositionRow>
@@ -247,48 +258,78 @@ export default function PositionsTab({ rows, units, persons }: Props) {
             align: 'center',
             render: (v: boolean) => (v ? <Tag color="gold">Lãnh đạo</Tag> : '–'),
           },
+          {
+            title: 'Trạng thái',
+            dataIndex: 'status',
+            width: 120,
+            render: (st: PositionRow['status'], r) => (st === 'ACTIVE' ? <Tag color="green">Hoạt động</Tag> : <Tag color="default" title={r.inactiveReason ?? undefined}>Ngừng sử dụng</Tag>),
+          },
           { title: 'Báo cáo cho', dataIndex: 'reportsToTitle', render: (t: string | null) => t ?? '–' },
-          { title: 'Người đang giữ', dataIndex: 'holder', render: (h: PositionRow['holder']) => h?.fullName ?? <Tag color="orange">còn trống</Tag> },
+          {
+            title: 'Người đang giữ',
+            dataIndex: 'holder',
+            render: (h: PositionRow['holder']) =>
+              h ? (
+                <>
+                  {h.fullName} {h.kind === 'CONCURRENT' && <Tag color="purple">Kiêm nhiệm</Tag>}
+                </>
+              ) : (
+                <Tag color="orange">còn trống</Tag>
+              ),
+          },
           {
             title: '',
-            width: 340,
-            render: (_: unknown, r) => (
-              <Space>
-                {r.holder ? (
+            width: 420,
+            render: (_: unknown, r) =>
+              r.status === 'INACTIVE' ? (
+                <Space>
+                  <ChangeHistoryButton targetType="position" targetId={r.id} title={r.title} canView={canAudit} />
+                  <Button
+                    size="small"
+                    loading={busy}
+                    onClick={() => run(async () => void (await apiCall('POST', `/positions/${r.id}/reactivate`)), { success: 'Đã kích hoạt lại vị trí' })}
+                  >
+                    Kích hoạt lại
+                  </Button>
+                </Space>
+              ) : (
+                <Space>
+                  <ChangeHistoryButton targetType="position" targetId={r.id} title={r.title} canView={canAudit} />
+                  {r.holder ? (
+                    <Popconfirm
+                      title={`Kết thúc phân công của ${r.holder.fullName}?`}
+                      description="Vị trí sẽ trống. Lịch sử giữ chức vẫn được lưu."
+                      okText="Kết thúc"
+                      okButtonProps={{ danger: true }}
+                      cancelText="Hủy"
+                      onConfirm={() => endAssignment(r)}
+                    >
+                      <Button size="small" danger loading={busy}>
+                        Kết thúc
+                      </Button>
+                    </Popconfirm>
+                  ) : (
+                    <Button size="small" type="primary" icon={<UserAddOutlined />} onClick={() => setAssigning(r)}>
+                      Phân công
+                    </Button>
+                  )}
+                  <Button size="small" onClick={() => setEditing(r)}>
+                    Sửa
+                  </Button>
                   <Popconfirm
-                    title={`Kết thúc phân công của ${r.holder.fullName}?`}
-                    description="Vị trí sẽ trống. Lịch sử giữ chức vẫn được lưu."
-                    okText="Kết thúc"
+                    title={`Ngừng sử dụng vị trí "${r.title}"?`}
+                    description="Vị trí chuyển sang trạng thái ngừng sử dụng (không xóa dữ liệu). Cần kết thúc phân công và ngừng các vị trí cấp dưới trước."
+                    okText="Ngừng sử dụng"
                     okButtonProps={{ danger: true }}
                     cancelText="Hủy"
-                    onConfirm={() => endAssignment(r)}
+                    onConfirm={() => run(async () => void (await apiCall('DELETE', `/positions/${r.id}`)), { success: 'Đã ngừng sử dụng vị trí' })}
                   >
                     <Button size="small" danger loading={busy}>
-                      Kết thúc
+                      Ngừng
                     </Button>
                   </Popconfirm>
-                ) : (
-                  <Button size="small" type="primary" icon={<UserAddOutlined />} onClick={() => setAssigning(r)}>
-                    Phân công
-                  </Button>
-                )}
-                <Button size="small" onClick={() => setEditing(r)}>
-                  Sửa
-                </Button>
-                <Popconfirm
-                  title={`Xóa vị trí "${r.title}"?`}
-                  description="Chỉ xóa được khi vị trí chưa có cấp dưới, lịch sử phân công, hồ sơ đánh giá hay phạm vi công việc."
-                  okText="Xóa"
-                  okButtonProps={{ danger: true }}
-                  cancelText="Hủy"
-                  onConfirm={() => run(async () => void (await apiCall('DELETE', `/positions/${r.id}`)), { success: 'Đã xóa vị trí' })}
-                >
-                  <Button size="small" danger loading={busy}>
-                    Xóa
-                  </Button>
-                </Popconfirm>
-              </Space>
-            ),
+                </Space>
+              ),
           },
         ]}
       />

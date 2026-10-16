@@ -15,11 +15,20 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
-type Hashable = Omit<AuditRecordDraft, 'hash'>;
+/** Phiên bản mã băm hiện hành: 2 thêm `module` và `type` vào nội dung được băm. */
+export const AUDIT_HASH_VERSION = 2;
 
-/** hash = SHA-256(prevHash | JSON ổn định của các trường). Không gồm id (do CSDL cấp). */
+type Hashable = Omit<AuditRecordDraft, 'hash' | 'module' | 'type' | 'hashVersion'> &
+  Partial<Pick<AuditRecordDraft, 'module' | 'type' | 'hashVersion'>>;
+
+/**
+ * hash = SHA-256(prevHash | JSON ổn định của các trường). Không gồm id (do CSDL cấp).
+ * Bản ghi hashVersion 1 (trước A5) giữ công thức cũ để chuỗi băm đã có vẫn xác minh được; từ hashVersion 2 có thêm module, type.
+ */
 export function computeAuditHash(record: Hashable): string {
+  const v2 = (record.hashVersion ?? 1) >= 2 ? { m: record.module, ty: record.type } : {};
   const payload = canonicalJson({
+    ...v2,
     t: record.occurredAt,
     a: record.actorAccountId,
     u: record.actorUsername,

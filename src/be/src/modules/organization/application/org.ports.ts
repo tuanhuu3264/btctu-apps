@@ -8,6 +8,7 @@ import type {
   PositionModel,
   PositionPatch,
 } from './org.model.js';
+import type { InactiveInfo } from './unit.model.js';
 
 /** Các cổng truy cập dữ liệu của lớp nghiệp vụ (abstract class để làm token DI). */
 export abstract class PersonRepository {
@@ -27,8 +28,8 @@ export abstract class PositionRepository {
   abstract findAll(filter?: { unitId?: string }): Promise<PositionModel[]>;
   abstract create(data: NewPosition): Promise<PositionModel>;
   abstract update(id: string, patch: PositionPatch): Promise<PositionModel>;
-  /** IN_USE: còn cấp dưới, phân công, hồ sơ hay phạm vi công việc trỏ tới nên không xóa được. */
-  abstract delete(id: string): Promise<'OK' | 'IN_USE'>;
+  /** Đổi trạng thái (không xóa dòng). */
+  abstract setStatus(id: string, info: InactiveInfo): Promise<PositionModel>;
 }
 
 export abstract class AssignmentRepository {

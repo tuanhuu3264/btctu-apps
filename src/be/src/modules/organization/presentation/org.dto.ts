@@ -187,7 +187,22 @@ export class UpdatePositionDto {
   referenceOkr?: string | null;
 }
 
-export class PositionQueryDto {
+export class IncludeInactiveQueryDto {
+  /** 'true': lấy cả đơn vị/vị trí đã ngừng sử dụng. */
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  includeInactive?: string;
+}
+
+export class OrgExportQueryDto extends IncludeInactiveQueryDto {
+  @IsIn(['units', 'positions', 'persons'])
+  list: 'units' | 'positions' | 'persons';
+
+  @IsIn(['xlsx', 'pdf'])
+  format: 'xlsx' | 'pdf';
+}
+
+export class PositionQueryDto extends IncludeInactiveQueryDto {
   @IsOptional()
   @IsUUID()
   unitId?: string;
@@ -202,6 +217,11 @@ export class SubordinatesQueryDto {
 export class AssignDto {
   @IsUUID()
   personId: string;
+
+  /** Không nêu: phân công chính. CONCURRENT: kiêm nhiệm thêm vị trí này (ADR-047). */
+  @IsOptional()
+  @IsIn(['PRIMARY', 'CONCURRENT'])
+  kind?: 'PRIMARY' | 'CONCURRENT';
 
   @IsOptional()
   @IsDateString()

@@ -33,6 +33,47 @@ describe('OrgQueryService: cấp trên và cấp dưới', () => {
     expect(await org.query.subordinateHolders(p3.id, { direct: false })).toEqual([p5.id]);
   });
 
+  describe('người kiêm nhiệm (ADR-047)', () => {
+    it('cấp dưới là hợp của mọi vị trí đang giữ; cấp trên tính theo từng vị trí', async () => {
+      const chain = await seedChain(org);
+      const [p1, p2, p3, p4, p5] = await Promise.all(['Nguyễn Văn A', 'Nguyễn Văn B', 'Nguyễn Văn C', 'Nguyễn Văn D', 'Nguyễn Văn E'].map(person));
+      await org.assignments.assign(chain.l1.id, p1.id);
+      await org.assignments.assign(chain.l2.id, p2.id);
+      await org.assignments.assign(chain.l3.id, p3.id);
+      await org.assignments.assign(chain.l5.id, p5.id);
+      await org.assignments.assign(chain.l4.id, p4.id);
+
+      // p5 rời vị trí cấp 5, p2 (chính ở cấp 2) kiêm nhiệm vị trí đó.
+      org.clock.advanceDays(1);
+      const l5 = (await org.assignments.list()).find((a) => a.positionId === chain.l5.id)!;
+      await org.assignments.end(l5.id);
+      await org.assignments.assign(chain.l5.id, p2.id, undefined, 'CONCURRENT');
+
+      expect(await org.query.subordinateHolders(p2.id, { direct: true })).toEqual([p3.id]);
+      expect((await org.query.subordinateHolders(p2.id, { direct: false })).sort()).toEqual([p3.id, p4.id].sort());
+      // Chỉ theo vị trí kiêm l5: không có cấp dưới.
+      expect(await org.query.subordinateHolders(p2.id, { direct: false, positionId: chain.l5.id })).toEqual([]);
+      // Cấp trên theo vị trí kiêm l5 là chuỗi l4 → l3 → l2 → l1, kể cả p2 chính là cấp trên của chính mình ở l2.
+      expect((await org.query.superiorsOf(p2.id, chain.l5.id)).map((s) => s.personId)).toEqual([p4.id, p3.id, p2.id, p1.id]);
+      // Không nêu vị trí: theo vị trí chính l2.
+      expect((await org.query.superiorsOf(p2.id)).map((s) => s.personId)).toEqual([p1.id]);
+    });
+
+    it('placementsDuring: chỉ cần giao nhau với kỳ', async () => {
+      const chain = await seedChain(org);
+      const a = await person('Nguyễn Văn A');
+      await org.assignments.assign(chain.l5.id, a.id, new Date('2020-01-01T00:00:00Z'));
+      const extra = await org.assignments.assign(chain.l3.id, a.id, new Date('2026-09-30T00:00:00Z'), 'CONCURRENT');
+      org.clock.advanceDays(1);
+
+      const inSep = await org.query.placementsDuring(a.id, new Date('2026-09-01T00:00:00Z'), new Date('2026-09-30T23:59:59Z'));
+      expect(inSep.map((p) => p.kind)).toEqual(['PRIMARY', 'CONCURRENT']);
+      const inAug = await org.query.placementsDuring(a.id, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-31T23:59:59Z'));
+      expect(inAug.map((p) => p.kind)).toEqual(['PRIMARY']);
+      expect(extra.kind).toBe('CONCURRENT');
+    });
+  });
+
   it('cán bộ không giữ vị trí nào thì không có cấp dưới', async () => {
     await seedChain(org);
     const loose = await person('Nguyễn Văn F');

@@ -17,7 +17,7 @@ type UnitRow = Stats & { unitCode: string; unitName: string };
 interface Props {
   periods: Period[];
   report: PeriodReport | null;
-  drafts: { report: Draft | null; decision: Draft | null };
+  drafts: { report: Draft | null; decision: Draft | null; notice: Draft | null };
   canExport: boolean;
 }
 
@@ -128,10 +128,10 @@ export default function ReportView({ periods, report, drafts, canExport }: Props
 
           {report.notes.length > 0 && <Alert type="info" showIcon message="Lưu ý" description={<ul style={{ margin: 0, paddingLeft: 20 }}>{report.notes.map((n) => <li key={n}>{n}</li>)}</ul>} />}
 
-          {(drafts.report || drafts.decision) && (
+          {(drafts.report || drafts.decision || drafts.notice) && (
             <Card size="small" title="Dự thảo văn bản (điền mẫu, không dùng AI)">
               <Collapse
-                items={[drafts.report, drafts.decision].flatMap((d) =>
+                items={[drafts.report, drafts.notice, drafts.decision].flatMap((d) =>
                   d
                     ? [
                         {
@@ -144,7 +144,7 @@ export default function ReportView({ periods, report, drafts, canExport }: Props
                                 <Button
                                   icon={<DownloadOutlined />}
                                   style={{ marginBottom: 12 }}
-                                  href={`${API_URL}/reporting/periods/${report.period.id}/draft/file?kind=${d.kind === 'REPORT' ? 'report' : 'decision'}`}
+                                  href={`${API_URL}/reporting/periods/${report.period.id}/draft/file?kind=${d.kind === 'REPORT' ? 'report' : d.kind === 'NOTICE' ? 'notice' : 'decision'}`}
                                 >
                                   Tải tệp Word (.docx)
                                 </Button>

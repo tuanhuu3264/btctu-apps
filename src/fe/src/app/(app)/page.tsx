@@ -3,6 +3,7 @@ import PageTitle from '@/components/page-title';
 import { redirect } from 'next/navigation';
 import { fetchDashboard, fetchMe, fetchPeriods, UnauthorizedError } from '@/lib/api';
 import type { Period, PeriodReport } from '@/lib/api';
+import type { DashboardMode } from '@/components/dashboard-panels';
 import DashboardView from './dashboard-view';
 
 // Dữ liệu lấy từ backend mỗi lần truy cập, không dựng sẵn lúc build.
@@ -32,6 +33,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
   }
 
   const nothing = !can('task:read') && !can('report:read');
+  // Góc nhìn: toàn Ban khi xem được toàn bộ hồ sơ; phòng khi có cấp dưới (giao việc, thẩm định); còn lại là cá nhân.
+  const mode: DashboardMode = report?.scope === 'ALL' ? 'BAN' : can('task:assign') || can('evaluation:review') ? 'PHONG' : 'CA_NHAN';
+  const deadline = periods.find((p) => p.id === report?.period.id)?.deadline ?? null;
   return (
     <>
       <PageTitle>Tổng quan</PageTitle>
@@ -39,7 +43,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
       {nothing ? (
         <Alert type="info" message="Tài khoản chưa được cấp vai trò để xem dữ liệu. Liên hệ quản trị hệ thống." showIcon />
       ) : (
-        <DashboardView canTasks={can('task:read')} periods={periods} report={report} />
+        <DashboardView
+          canTasks={can('task:read')}
+          canReadAllTasks={can('task:read-all')}
+          canReviews={can('access-review:manage') || can('access-review:confirm') || can('access-review:oversee')}
+          mode={mode}
+          myPersonId={me.personId}
+          deadline={deadline}
+          periods={periods}
+          report={report}
+        />
       )}
     </>
   );

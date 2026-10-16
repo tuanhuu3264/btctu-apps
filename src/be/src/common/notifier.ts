@@ -11,7 +11,14 @@ export type NotificationType =
   | 'EVAL_REVIEWED'
   | 'EVAL_APPROVED'
   | 'EVAL_RETURNED'
-  | 'DOC_PUBLISHED';
+  | 'DEADLINE_REMINDER'
+  | 'COMPLAINT_RECEIVED'
+  | 'DOC_PUBLISHED'
+  | 'TASK_PROPOSED'
+  | 'TASK_PROPOSAL_DECIDED'
+  | 'ACCESS_REVIEW_ASSIGNED'
+  | 'ACCESS_REVIEW_REMINDER'
+  | 'ACCESS_REVIEW_OVERDUE';
 
 export interface NotificationContent {
   type: NotificationType;

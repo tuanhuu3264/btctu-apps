@@ -5,6 +5,8 @@ import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag } fro
 import { useState } from 'react';
 import type { OrgUnit } from '@/lib/api';
 import { apiCall } from '@/lib/client';
+import ExportButtons from '@/components/export-buttons';
+import ChangeHistoryButton from '@/components/change-history';
 import { useAction } from '@/lib/use-action';
 
 interface Values {
@@ -67,25 +69,30 @@ function UnitFormModal({ unit, units, onClose }: { unit: OrgUnit | null; units: 
           <Select options={[{ value: 'BAN', label: 'Ban' }, { value: 'PHONG', label: 'Phòng' }]} style={{ width: 200 }} />
         </Form.Item>
         <Form.Item name="parentId" label="Thuộc đơn vị">
-          <Select allowClear placeholder="(không có)" options={units.filter((u) => !blocked.has(u.id)).map((u) => ({ value: u.id, label: u.name }))} />
+          <Select allowClear placeholder="(không có)" options={units.filter((u) => u.status === 'ACTIVE' && !blocked.has(u.id)).map((u) => ({ value: u.id, label: u.name }))} />
         </Form.Item>
       </Form>
     </Modal>
   );
 }
 
-export default function UnitsTab({ units }: { units: OrgUnit[] }) {
+export default function UnitsTab({ units, canAudit = false }: { units: OrgUnit[]; canAudit?: boolean }) {
   const { run, busy } = useAction();
   /** undefined: đóng; null: thêm mới; OrgUnit: sửa. */
   const [editing, setEditing] = useState<OrgUnit | null | undefined>(undefined);
   const nameOf = (id: string | null) => units.find((u) => u.id === id)?.name ?? '–';
-  const hasChildren = (u: OrgUnit) => units.some((x) => x.parentId === u.id);
+  const hasActiveChildren = (u: OrgUnit) => units.some((x) => x.parentId === u.id && x.status === 'ACTIVE');
+  const hasActivePositions = (u: OrgUnit) => u.positions.some((p) => p.status === 'ACTIVE');
+  const parentInactive = (u: OrgUnit) => units.some((x) => x.id === u.parentId && x.status === 'INACTIVE');
 
   return (
     <>
-      <Button type="primary" icon={<PlusOutlined />} style={{ marginBottom: 16 }} onClick={() => setEditing(null)}>
-        Thêm đơn vị
-      </Button>
+      <Space style={{ marginBottom: 16 }} wrap>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing(null)}>
+          Thêm đơn vị
+        </Button>
+        <ExportButtons path="/org/export?list=units&includeInactive=true" />
+      </Space>
       <Table<OrgUnit>
         rowKey="id"
         pagination={false}
@@ -95,28 +102,46 @@ export default function UnitsTab({ units }: { units: OrgUnit[] }) {
           { title: 'Tên đơn vị', dataIndex: 'name' },
           { title: 'Loại', dataIndex: 'type', render: (t: OrgUnit['type']) => (t === 'BAN' ? <Tag color="red">Ban</Tag> : <Tag color="blue">Phòng</Tag>) },
           { title: 'Thuộc', dataIndex: 'parentId', render: (id: string | null) => nameOf(id) },
-          { title: 'Số vị trí', render: (_: unknown, u) => u.positions.length, align: 'right' },
+          { title: 'Số vị trí', render: (_: unknown, u) => u.positions.filter((p) => p.status === 'ACTIVE').length, align: 'right' },
+          {
+            title: 'Trạng thái',
+            dataIndex: 'status',
+            width: 130,
+            render: (st: OrgUnit['status'], u) => (st === 'ACTIVE' ? <Tag color="green">Hoạt động</Tag> : <Tag color="default" title={u.inactiveReason ?? undefined}>Ngừng sử dụng</Tag>),
+          },
           {
             title: '',
-            width: 150,
+            width: 280,
             render: (_: unknown, u) => (
               <Space>
-                <Button size="small" onClick={() => setEditing(u)}>
+                <ChangeHistoryButton targetType="unit" targetId={u.id} title={u.name} canView={canAudit} />
+                <Button size="small" onClick={() => setEditing(u)} disabled={u.status === 'INACTIVE'}>
                   Sửa
                 </Button>
-                <Popconfirm
-                  title={`Xóa đơn vị "${u.name}"?`}
-                  description="Chỉ xóa được khi đơn vị chưa có đơn vị con, vị trí hay phạm vi công việc."
-                  okText="Xóa"
-                  okButtonProps={{ danger: true }}
-                  cancelText="Hủy"
-                  disabled={u.positions.length > 0 || hasChildren(u)}
-                  onConfirm={() => run(async () => void (await apiCall('DELETE', `/units/${u.id}`)), { success: 'Đã xóa đơn vị' })}
-                >
-                  <Button size="small" danger disabled={u.positions.length > 0 || hasChildren(u)} loading={busy}>
-                    Xóa
+                {u.status === 'ACTIVE' ? (
+                  <Popconfirm
+                    title={`Ngừng sử dụng đơn vị "${u.name}"?`}
+                    description="Đơn vị chuyển sang trạng thái ngừng sử dụng (không xóa dữ liệu). Cần ngừng các đơn vị con và vị trí trước."
+                    okText="Ngừng sử dụng"
+                    okButtonProps={{ danger: true }}
+                    cancelText="Hủy"
+                    disabled={hasActivePositions(u) || hasActiveChildren(u)}
+                    onConfirm={() => run(async () => void (await apiCall('DELETE', `/units/${u.id}`)), { success: 'Đã ngừng sử dụng đơn vị' })}
+                  >
+                    <Button size="small" danger disabled={hasActivePositions(u) || hasActiveChildren(u)} loading={busy}>
+                      Ngừng
+                    </Button>
+                  </Popconfirm>
+                ) : (
+                  <Button
+                    size="small"
+                    disabled={parentInactive(u)}
+                    loading={busy}
+                    onClick={() => run(async () => void (await apiCall('POST', `/units/${u.id}/reactivate`)), { success: 'Đã kích hoạt lại đơn vị' })}
+                  >
+                    Kích hoạt lại
                   </Button>
-                </Popconfirm>
+                )}
               </Space>
             ),
           },

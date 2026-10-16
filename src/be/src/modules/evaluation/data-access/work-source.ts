@@ -15,6 +15,7 @@ export class TaskingWorkSourceAdapter extends PeriodWorkSource {
       assignmentId: w.assignmentId,
       taskTitle: w.taskTitle,
       personId: w.personId,
+      positionId: w.positionId ?? null,
       catalogItemCode: w.catalogItemCode,
       plannedQuantity: w.plannedQuantity,
       confirmedQuantity: w.confirmedQuantity,

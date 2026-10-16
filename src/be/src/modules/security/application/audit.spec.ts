@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import { Clock } from '../../../common/clock.js';
 import { requestContext } from '../../../common/request-context.js';
 import { AccountService } from './account.service.js';
-import { canonicalJson, computeAuditHash, sanitizeDetails } from './audit-hash.js';
+import { AUDIT_HASH_VERSION, canonicalJson, computeAuditHash, sanitizeDetails } from './audit-hash.js';
 import { GENESIS_HASH } from './audit.model.js';
 import { AuditService } from './audit.service.js';
 import { AuthorizationService } from './authorization.service.js';
@@ -71,6 +71,30 @@ describe('hàm băm của nhật ký', () => {
     expect(computeAuditHash({ ...base, details: { k: 2 } })).not.toBe(h);
     expect(computeAuditHash({ ...base, prevHash: 'f'.repeat(64) })).not.toBe(h);
   });
+
+  it('hashVersion 1 giữ công thức cũ (không gồm module, type); hashVersion 2 có hai trường này', () => {
+    const base = {
+      occurredAt: new Date('2026-10-03T08:00:00Z'),
+      actorAccountId: 'a1',
+      actorUsername: 'u',
+      action: 'unit.update',
+      outcome: 'SUCCESS' as const,
+      targetType: 'unit',
+      targetId: 'x',
+      details: { k: 1 },
+      requestId: null,
+      ip: null,
+      prevHash: GENESIS_HASH,
+    };
+    const legacy = computeAuditHash(base);
+    // Bản ghi cũ: module và type được suy khi đọc nên không làm đổi mã băm.
+    expect(computeAuditHash({ ...base, hashVersion: 1, module: 'organization', type: 'UPDATE' })).toBe(legacy);
+    expect(computeAuditHash({ ...base, hashVersion: 1, module: 'catalog', type: 'DELETE' })).toBe(legacy);
+    const v2 = computeAuditHash({ ...base, hashVersion: 2, module: 'organization', type: 'UPDATE' });
+    expect(v2).not.toBe(legacy);
+    expect(computeAuditHash({ ...base, hashVersion: 2, module: 'catalog', type: 'UPDATE' })).not.toBe(v2);
+    expect(computeAuditHash({ ...base, hashVersion: 2, module: 'organization', type: 'DELETE' })).not.toBe(v2);
+  });
 });
 
 describe('AuditService: chuỗi băm', () => {
@@ -104,6 +128,56 @@ describe('AuditService: chuỗi băm', () => {
     expect(await audit.verify()).toMatchObject({ valid: true, checked: 0, lastId: null, lastHash: GENESIS_HASH });
     await write(5);
     expect(await audit.verify()).toMatchObject({ valid: true, checked: 5, lastId: '5' });
+  });
+
+  it('ghi module và type: suy từ action, hoặc theo giá trị nơi gọi nêu rõ; hashVersion hiện hành', async () => {
+    const a = await audit.record({ action: 'unit.deactivate', outcome: 'SUCCESS', targetType: 'unit', targetId: 'u1' });
+    expect(a).toMatchObject({ module: 'organization', type: 'STATUS_CHANGE', hashVersion: AUDIT_HASH_VERSION });
+    const b = await audit.record({ action: 'unit.deactivate', outcome: 'SUCCESS', module: 'system', type: 'OTHER' });
+    expect(b).toMatchObject({ module: 'system', type: 'OTHER' });
+    expect(await audit.verify()).toMatchObject({ valid: true, checked: 2 });
+  });
+
+  it('chuỗi có cả bản ghi cũ (hashVersion 1) lẫn mới vẫn xác minh được; sửa module/type của bản ghi mới bị phát hiện', async () => {
+    // Bản ghi cũ: công thức không gồm module/type, module/type chỉ là giá trị suy ra khi đọc.
+    const legacyDraft = {
+      occurredAt: new Date('2026-10-01T08:00:00Z'),
+      actorAccountId: null,
+      actorUsername: null,
+      action: 'person.update',
+      outcome: 'SUCCESS' as const,
+      module: 'organization' as const,
+      type: 'UPDATE' as const,
+      hashVersion: 1,
+      targetType: 'person',
+      targetId: 'p1',
+      details: null,
+      requestId: null,
+      ip: null,
+      prevHash: GENESIS_HASH,
+    };
+    await repo.append(() => ({ ...legacyDraft, hash: computeAuditHash(legacyDraft) }));
+    await audit.record({ action: 'unit.update', outcome: 'SUCCESS', targetType: 'unit', targetId: 'u1' });
+    expect(await audit.verify()).toMatchObject({ valid: true, checked: 2 });
+
+    repo.rows[1].module = 'catalog';
+    expect(await audit.verify()).toMatchObject({ valid: false, firstInvalidId: '2' });
+    repo.rows[1].module = 'organization';
+    repo.rows[1].type = 'DELETE';
+    expect(await audit.verify()).toMatchObject({ valid: false, firstInvalidId: '2' });
+  });
+
+  it('lọc theo module, type, đối tượng; xem lịch sử của một đối tượng', async () => {
+    await audit.record({ action: 'unit.create', outcome: 'SUCCESS', targetType: 'unit', targetId: 'u1' });
+    await audit.record({ action: 'unit.update', outcome: 'SUCCESS', targetType: 'unit', targetId: 'u1' });
+    await audit.record({ action: 'unit.update', outcome: 'SUCCESS', targetType: 'unit', targetId: 'u2' });
+    await audit.record({ action: 'catalog.item.update', outcome: 'SUCCESS', targetType: 'catalog_item', targetId: 'i1' });
+
+    expect((await audit.find({ module: 'organization' })).map((r) => r.action)).toEqual(['unit.update', 'unit.update', 'unit.create']);
+    expect(await audit.find({ module: 'organization', type: 'CREATE' })).toHaveLength(1);
+    expect(await audit.find({ type: 'UPDATE' })).toHaveLength(3);
+    expect((await audit.historyOf('unit', 'u1')).map((r) => r.action)).toEqual(['unit.update', 'unit.create']);
+    expect(await audit.historyOf('unit', 'khong-co')).toEqual([]);
   });
 
   it('phát hiện sửa nội dung một bản ghi ở giữa', async () => {
@@ -167,6 +241,24 @@ describe('AuditService: chuỗi băm', () => {
     await write(5);
     expect(await audit.find({ limit: 2 })).toHaveLength(2);
     expect(await audit.find({ limit: 99999 })).toHaveLength(5);
+  });
+
+  it('lọc theo kết quả, tên đăng nhập, khoảng thời gian; liệt kê các hành động đã ghi', async () => {
+    await audit.record({ action: 'a.one', outcome: 'SUCCESS', actor: { id: 'u1', username: 'an' } });
+    await audit.record({ action: 'a.two', outcome: 'DENIED', actor: { id: 'u2', username: 'binh' } });
+    await audit.record({ action: 'a.one', outcome: 'FAILURE', actor: { id: 'u1', username: 'an' } });
+
+    expect((await audit.find({ outcome: 'DENIED' })).map((r) => r.action)).toEqual(['a.two']);
+    expect(await audit.find({ username: 'an' })).toHaveLength(2);
+    expect(await audit.find({ username: 'an', outcome: 'FAILURE' })).toHaveLength(1);
+    expect(await audit.find({ username: 'khong-co' })).toEqual([]);
+
+    const at = repo.rows[0].occurredAt;
+    expect(await audit.find({ from: new Date(at.getTime() + 1) })).toEqual([]);
+    expect(await audit.find({ to: new Date(at.getTime() - 1) })).toEqual([]);
+    expect(await audit.find({ from: at, to: new Date(at.getTime() + 1) })).toHaveLength(3);
+
+    expect(await audit.actions()).toEqual(['a.one', 'a.two']);
   });
 });
 

@@ -22,7 +22,7 @@ export default async function OrganizationPage() {
   let positions: Position[] = [];
   let error: string | null = null;
   try {
-    [tree, persons, positions] = await Promise.all([fetchOrgTree(), fetchPersons(), fetchPositions()]);
+    [tree, persons, positions] = await Promise.all([fetchOrgTree(true), fetchPersons(), fetchPositions(true)]);
   } catch (e) {
     if (e instanceof UnauthorizedError) redirect('/login');
     error = e instanceof Error ? e.message : 'Lỗi không xác định';
@@ -32,7 +32,7 @@ export default async function OrganizationPage() {
     <>
       <PageTitle>Quản lý cán bộ và cơ cấu tổ chức</PageTitle>
       {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
-      <OrganizationView tree={tree} persons={persons} positions={positions} />
+      <OrganizationView tree={tree} persons={persons} positions={positions} canAudit={me.permissions.includes('audit:read')} />
     </>
   );
 }

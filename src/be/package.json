@@ -40,6 +40,7 @@
     "cookie-parser": "^1.4.7",
     "docx": "^9.9.0",
     "exceljs": "^4.4.0",
+    "helmet": "^8.3.0",
     "pdfmake": "^0.3.11",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",

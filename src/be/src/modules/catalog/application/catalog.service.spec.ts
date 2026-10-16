@@ -90,11 +90,17 @@ describe('CatalogService: phiên bản và công việc', () => {
       await expect(c.catalog.updateItem(items.a3.id, { complexity: 9 })).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('xóa công việc; báo không tìm thấy khi không tồn tại', async () => {
+    it('ngừng công việc (xóa mềm): dòng vẫn còn, mã không dùng lại, kích hoạt lại được; không tìm thấy thì báo lỗi', async () => {
       const { version, items } = await seedDraft(c);
-      await c.catalog.deleteItem(items.light.id);
-      expect((await c.catalog.getVersion(version.id)).items.map((i) => i.code)).not.toContain('B.001');
-      await expect(c.catalog.deleteItem('khong-co')).rejects.toBeInstanceOf(NotFoundException);
+      const off = await c.catalog.deactivateItem(items.light.id, '  Bỏ  ');
+      expect(off).toMatchObject({ status: 'INACTIVE', inactiveReason: 'Bỏ' });
+      const view = await c.catalog.getVersion(version.id);
+      expect(view.items.find((i) => i.code === 'B.001')).toMatchObject({ status: 'INACTIVE' }); // vẫn còn dòng
+      await expect(c.catalog.deactivateItem(items.light.id)).rejects.toBeInstanceOf(ConflictException); // đã ngừng
+      await expect(c.catalog.deactivateItem('khong-co')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(c.catalog.addItem(version.id, { code: 'B.001', name: 'x', complexity: 1, durationMode: 'ACTUAL' })).rejects.toBeInstanceOf(ConflictException); // mã được giữ
+      expect(await c.catalog.reactivateItem(items.light.id)).toMatchObject({ status: 'ACTIVE', inactiveAt: null, inactiveReason: null });
+      await expect(c.catalog.reactivateItem(items.light.id)).rejects.toBeInstanceOf(ConflictException);
     });
   });
 
@@ -128,7 +134,7 @@ describe('CatalogService: phiên bản và công việc', () => {
 
     it('không xóa công việc chuẩn, không xóa điểm của nó', async () => {
       const { items } = await seedDraft(c);
-      await expect(c.catalog.deleteItem(items.baseline.id)).rejects.toBeInstanceOf(ConflictException);
+      await expect(c.catalog.deactivateItem(items.baseline.id)).rejects.toBeInstanceOf(ConflictException);
       await expect(c.catalog.updateItem(items.baseline.id, { points: null })).rejects.toBeInstanceOf(ConflictException);
       await expect(c.catalog.updateItem(items.baseline.id, { points: 0 })).rejects.toBeInstanceOf(ConflictException);
       await expect(c.catalog.updateItem(items.baseline.id, { points: 100 })).resolves.toMatchObject({ points: 100 });
@@ -153,7 +159,7 @@ describe('CatalogService: phiên bản và công việc', () => {
 
       await expect(c.catalog.addItem(version.id, { code: 'A.099', name: 'x', complexity: 1, durationMode: 'ACTUAL' })).rejects.toBeInstanceOf(ConflictException);
       await expect(c.catalog.updateItem(items.a3.id, { points: 1 })).rejects.toBeInstanceOf(ConflictException);
-      await expect(c.catalog.deleteItem(items.light.id)).rejects.toBeInstanceOf(ConflictException);
+      await expect(c.catalog.deactivateItem(items.light.id)).rejects.toBeInstanceOf(ConflictException);
       await expect(c.catalog.setBaseline(version.id, 'A.003')).rejects.toBeInstanceOf(ConflictException);
       await expect(c.catalog.approve(approver, version.id)).rejects.toBeInstanceOf(ConflictException);
     });
@@ -203,7 +209,7 @@ describe('CatalogService: phiên bản và công việc', () => {
   it('ghi nhật ký cho mọi thay đổi', async () => {
     const { version, items } = await seedDraft(c);
     await c.catalog.updateItem(items.a3.id, { points: 130 });
-    await c.catalog.deleteItem(items.light.id);
+    await c.catalog.deactivateItem(items.light.id);
     await c.catalog.approve(approver, version.id);
     const actions = c.audit.map((a) => a.action);
     expect(actions).toEqual(expect.arrayContaining([
@@ -211,7 +217,7 @@ describe('CatalogService: phiên bản và công việc', () => {
       'catalog.item.create',
       'catalog.baseline.set',
       'catalog.item.update',
-      'catalog.item.delete',
+      'catalog.item.deactivate',
       'catalog.version.approve',
     ]));
     expect(c.audit.find((a) => a.action === 'catalog.item.update')?.details).toMatchObject({
@@ -302,10 +308,14 @@ describe('CatalogService: nhiệm vụ của danh mục (ADR-019)', () => {
     await expect(c.catalog.updateTask(t2.id, { name: 'x' })).rejects.toBeInstanceOf(BadRequestException);
 
     await c.catalog.updateItem(items.a3.id, { taskId: t1.id });
-    await expect(c.catalog.deleteTask(t1.id)).rejects.toBeInstanceOf(ConflictException); // còn công việc
-    await c.catalog.deleteTask(t2.id);
-    expect((await c.catalog.getVersion(version.id)).tasks.some((t) => t.id === t2.id)).toBe(false);
-    await expect(c.catalog.deleteTask(t2.id)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(c.catalog.deactivateTask(t1.id)).rejects.toBeInstanceOf(ConflictException); // còn công việc đang hoạt động
+    const off = await c.catalog.deactivateTask(t2.id, 'Không dùng');
+    expect(off).toMatchObject({ status: 'INACTIVE', inactiveReason: 'Không dùng' });
+    expect((await c.catalog.getVersion(version.id)).tasks.find((t) => t.id === t2.id)).toMatchObject({ status: 'INACTIVE' }); // vẫn còn dòng
+    await expect(c.catalog.deactivateTask(t2.id)).rejects.toBeInstanceOf(ConflictException); // đã ngừng
+    await expect(c.catalog.deactivateTask('khong-co')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(c.catalog.updateItem(items.a3.id, { taskId: t2.id })).rejects.toBeInstanceOf(ConflictException); // không chuyển vào nhiệm vụ đã ngừng
+    expect(await c.catalog.reactivateTask(t2.id)).toMatchObject({ status: 'ACTIVE', inactiveAt: null });
   });
 
   it('bản nháp sao chép có đủ nhiệm vụ, công việc vẫn thuộc đúng nhiệm vụ (của phiên bản mới)', async () => {
@@ -330,7 +340,7 @@ describe('CatalogService: nhiệm vụ của danh mục (ADR-019)', () => {
     await c.catalog.approve(approver, version.id);
     await expect(c.catalog.createTask(version.id, { groupCode: 'A', name: 'Nhiệm vụ mới' })).rejects.toBeInstanceOf(ConflictException);
     await expect(c.catalog.updateTask(task.id, { name: 'Đổi tên' })).rejects.toBeInstanceOf(ConflictException);
-    await expect(c.catalog.deleteTask(task.id)).rejects.toBeInstanceOf(ConflictException);
+    await expect(c.catalog.deactivateTask(task.id)).rejects.toBeInstanceOf(ConflictException);
   });
 });
 
@@ -434,10 +444,12 @@ describe('CatalogService: nhóm do người dùng thêm (ADR-020)', () => {
     const task = await c.catalog.createTask(version.id, { groupCode: group.code, name: 'Nhiệm vụ tạm' });
     await expect(c.catalog.deleteGroup(group.code)).rejects.toBeInstanceOf(ConflictException); // còn nhiệm vụ
 
-    await c.catalog.deleteTask(task.id);
-    await c.catalog.deleteGroup(group.code);
-    expect((await c.catalog.getVersion(version.id)).groups.some((g) => g.code === group.code)).toBe(false);
-    await expect(c.catalog.deleteGroup(group.code)).rejects.toBeInstanceOf(NotFoundException);
+    await c.catalog.deactivateTask(task.id);
+    await expect(c.catalog.deleteGroup(group.code)).rejects.toBeInstanceOf(ConflictException); // nhiệm vụ đã ngừng vẫn còn dòng nên giữ nhóm
+    const empty = await c.catalog.createGroup({ name: 'Nhóm trống' });
+    await c.catalog.deleteGroup(empty.code);
+    expect((await c.catalog.getVersion(version.id)).groups.some((g) => g.code === empty.code)).toBe(false);
+    await expect(c.catalog.deleteGroup(empty.code)).rejects.toBeInstanceOf(NotFoundException);
 
     const withItems = await seedDraft(c); // nhóm A, B đã có công việc
     await expect(c.catalog.deleteGroup('A')).rejects.toBeInstanceOf(ConflictException);

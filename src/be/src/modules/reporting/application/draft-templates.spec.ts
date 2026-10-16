@@ -99,3 +99,40 @@ describe('dự thảo quyết định', () => {
     expect(none.approvedCount).toBe(0);
   });
 });
+
+describe('dự thảo thông báo kết quả và báo cáo năm (A7)', () => {
+  const rows = [
+    approved('Nguyễn Văn A', 92, 'XUAT_SAC'),
+    approved('Trần Thị B', 80, 'HOAN_THANH_TOT', { unitCode: 'VP', unitName: 'Văn phòng' }),
+    pending('Lê Văn C', 'SELF_SUBMITTED'),
+  ];
+
+  it('thông báo nêu số liệu chung và theo đơn vị, không nêu tên cán bộ, còn chỗ trống cho số, ngày, hạn phản ánh', () => {
+    const draft = buildDraft('NOTICE', report(rows));
+    expect(draft.kind).toBe('NOTICE');
+    expect(draft.title).toMatch(/^Dự thảo thông báo/);
+    expect(draft.body).toContain('THÔNG BÁO');
+    expect(draft.body).toContain('Đã phê duyệt 2/3 hồ sơ');
+    expect(draft.body).toContain('Văn phòng: 1/1 hồ sơ đã phê duyệt');
+    expect(draft.body).toContain('-TB/BTCTU');
+    expect(draft.body).toContain('Quyết định số …-QĐ/BTCTU');
+    expect(draft.body).not.toContain('Nguyễn Văn A');
+    expect(draft.body).not.toContain('Lê Văn C');
+    expect(draft.disclaimer).toBe(DRAFT_DISCLAIMER);
+    expect(draft.approvedCount).toBe(2);
+  });
+
+  it('thông báo cho kỳ chưa có hồ sơ vẫn dựng được', () => {
+    expect(buildDraft('NOTICE', report([])).body).toContain('(Chưa có hồ sơ đánh giá trong kỳ.)');
+  });
+
+  it('báo cáo kỳ năm có ghi chú điểm năm và số hồ sơ không xếp loại; kỳ quý thì không', () => {
+    const base = report([...rows, approved('Phạm Thị D', 0, 'HOAN_THANH', { rating: null, totalScore: null })]);
+    const quarter = buildDraft('REPORT', base);
+    expect(quarter.body).not.toContain('GHI CHÚ VỀ ĐIỂM NĂM');
+    const year = buildDraft('REPORT', { ...base, period: { ...base.period, type: 'YEAR', label: '2026' } });
+    expect(year.body).toContain('V. GHI CHÚ VỀ ĐIỂM NĂM');
+    expect(year.body).toContain('trung bình cộng điểm các tháng');
+    expect(year.body).toContain('không xếp loại" do chưa đủ 6 tháng công tác trong năm (Điều 11.1): 1.');
+  });
+});

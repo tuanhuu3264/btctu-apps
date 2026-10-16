@@ -6,6 +6,7 @@ export { AuthorizationService } from './application/authorization.service.js';
 export { RecipientService } from './application/recipient.service.js';
 export { RoleService } from './application/role.service.js';
 export { ROLES } from './application/authorization.model.js';
+export type { AccountSummary, RoleAssignmentModel } from './application/authorization.model.js';
 export type { Permission, Role } from './application/authorization.model.js';
 export type { CurrentAccount as CurrentAccountModel } from './application/security.model.js';
 export { Public } from './presentation/public.decorator.js';

@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Between, In, Repository } from 'typeorm';
 import type {
   AssignmentModel,
+  AssignmentPatch,
   AssignmentStatus,
   AttachmentModel,
   CommentModel,
@@ -15,12 +16,22 @@ import type {
   ProgressPatch,
   WorkTaskModel,
 } from '../application/tasking.model.js';
-import { AssignmentRepository, AttachmentRepository, CommentRepository, ConsultantRepository, ProgressRepository, WorkTaskRepository } from '../application/tasking.ports.js';
+import type { NewRecurringTemplate, RecurringTemplateModel, RecurringTemplatePatch } from '../application/recurring.model.js';
+import {
+  AssignmentRepository,
+  AttachmentRepository,
+  CommentRepository,
+  ConsultantRepository,
+  ProgressRepository,
+  RecurringTemplateRepository,
+  WorkTaskRepository,
+} from '../application/tasking.ports.js';
 import {
   WorkAssignmentEntity,
   WorkAttachmentEntity,
   WorkCommentEntity,
   WorkConsultantEntity,
+  RecurringTemplateEntity,
   WorkProgressEntity,
   WorkTaskEntity,
 } from './tasking.entities.js';
@@ -58,7 +69,16 @@ export class TypeOrmAssignmentRepository extends AssignmentRepository {
     return (await this.repo.find({ where: { approverPersonId: personId }, order: { dueDate: 'ASC', createdAt: 'ASC' } })).map(toAssignment);
   }
 
-  async update(id: string, patch: { note?: string | null; approverPersonId?: string | null }): Promise<AssignmentModel> {
+  async findRecurringKeys(templateId: string): Promise<Set<string>> {
+    const rows = await this.repo.find({ where: { recurringTemplateId: templateId }, select: { recurringKey: true } });
+    return new Set(rows.flatMap((r) => (r.recurringKey ? [r.recurringKey] : [])));
+  }
+
+  async findByTemplate(templateId: string): Promise<AssignmentModel[]> {
+    return (await this.repo.find({ where: { recurringTemplateId: templateId }, order: { dueDate: 'ASC' } })).map(toAssignment);
+  }
+
+  async update(id: string, patch: AssignmentPatch): Promise<AssignmentModel> {
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     if (Object.keys(clean).length > 0) await this.repo.update({ id }, clean);
     return toAssignment(await this.repo.findOneByOrFail({ id }));
@@ -256,7 +276,13 @@ const toAssignment = (e: WorkAssignmentEntity): AssignmentModel => ({
   note: e.note,
   status: e.status,
   approverPersonId: e.approverPersonId,
+  okrKeyResult: e.okrKeyResult,
   createdAt: e.createdAt,
+  source: e.source,
+  title: e.title,
+  recurringTemplateId: e.recurringTemplateId,
+  recurringKey: e.recurringKey,
+  positionId: e.positionId,
 });
 
 const toProgress = (e: WorkProgressEntity): ProgressModel => ({
@@ -271,4 +297,58 @@ const toProgress = (e: WorkProgressEntity): ProgressModel => ({
   decidedAt: e.decidedAt,
   decisionNote: e.decisionNote,
   majorError: e.majorError,
+});
+
+@Injectable()
+export class TypeOrmRecurringTemplateRepository extends RecurringTemplateRepository {
+  constructor(@InjectRepository(RecurringTemplateEntity) private readonly repo: Repository<RecurringTemplateEntity>) {
+    super();
+  }
+
+  async findById(id: string): Promise<RecurringTemplateModel | null> {
+    const row = await this.repo.findOneBy({ id });
+    return row ? toTemplate(row) : null;
+  }
+
+  async findAll(): Promise<RecurringTemplateModel[]> {
+    return (await this.repo.find({ order: { createdAt: 'DESC' } })).map(toTemplate);
+  }
+
+  async findActive(): Promise<RecurringTemplateModel[]> {
+    return (await this.repo.find({ where: { status: 'ACTIVE' }, order: { createdAt: 'ASC' } })).map(toTemplate);
+  }
+
+  async create(data: NewRecurringTemplate): Promise<RecurringTemplateModel> {
+    return toTemplate(await this.repo.save(this.repo.create({ ...data, status: 'ACTIVE', inactiveAt: null, lastRunAt: null, lastError: null })));
+  }
+
+  async update(id: string, patch: RecurringTemplatePatch): Promise<RecurringTemplateModel> {
+    const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    if (Object.keys(clean).length > 0) await this.repo.update({ id }, clean);
+    return toTemplate(await this.repo.findOneByOrFail({ id }));
+  }
+}
+
+const toTemplate = (e: RecurringTemplateEntity): RecurringTemplateModel => ({
+  id: e.id,
+  assigneePersonId: e.assigneePersonId,
+  taskId: e.taskId,
+  source: e.source,
+  catalogItemCode: e.catalogItemCode,
+  title: e.title,
+  plannedQuantity: e.plannedQuantity,
+  frequency: e.frequency,
+  startDate: e.startDate,
+  endDate: e.endDate,
+  dueAfterDays: e.dueAfterDays,
+  periodMode: e.periodMode,
+  reportKinds: e.reportKinds,
+  note: e.note,
+  approverPersonId: e.approverPersonId,
+  status: e.status,
+  createdBy: e.createdBy,
+  createdAt: e.createdAt,
+  inactiveAt: e.inactiveAt,
+  lastRunAt: e.lastRunAt,
+  lastError: e.lastError,
 });

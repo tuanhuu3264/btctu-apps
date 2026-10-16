@@ -11,6 +11,7 @@ import type {
   PositionModel,
   PositionPatch,
 } from '../application/org.model.js';
+import type { InactiveInfo } from '../application/unit.model.js';
 import { defaultIsLeader, EMPTY_PROFILE, PERSON_PROFILE_FIELDS } from '../application/org.model.js';
 import { AssignmentRepository, PersonRepository, PositionRepository } from '../application/org.ports.js';
 import { AssignmentEntity, JobPositionEntity, PersonEntity } from './org.entities.js';
@@ -81,7 +82,7 @@ export class TypeOrmPositionRepository extends PositionRepository {
   }
 
   async create(data: NewPosition): Promise<PositionModel> {
-    return toPosition(await this.repo.save(this.repo.create({ ...data, isLeader: data.isLeader ?? defaultIsLeader(data.level) })));
+    return toPosition(await this.repo.save(this.repo.create({ ...data, isLeader: data.isLeader ?? defaultIsLeader(data.level), status: 'ACTIVE', inactiveAt: null, inactiveReason: null })));
   }
 
   async update(id: string, patch: PositionPatch): Promise<PositionModel> {
@@ -89,14 +90,9 @@ export class TypeOrmPositionRepository extends PositionRepository {
     return toPosition(await this.repo.findOneByOrFail({ id }));
   }
 
-  async delete(id: string): Promise<'OK' | 'IN_USE'> {
-    try {
-      await this.repo.delete({ id });
-      return 'OK';
-    } catch (e) {
-      if ((e as { driverError?: { code?: string } }).driverError?.code === '23503') return 'IN_USE'; // vi phạm khóa ngoại
-      throw e;
-    }
+  async setStatus(id: string, info: InactiveInfo): Promise<PositionModel> {
+    await this.repo.update({ id }, info);
+    return toPosition(await this.repo.findOneByOrFail({ id }));
   }
 }
 
@@ -150,12 +146,16 @@ const toPosition = (e: JobPositionEntity): PositionModel => ({
   reportsToPositionId: e.reportsToPositionId,
   duties: e.duties,
   referenceOkr: e.referenceOkr,
+  status: e.status,
+  inactiveAt: e.inactiveAt,
+  inactiveReason: e.inactiveReason,
 });
 
 const toAssignment = (e: AssignmentEntity): AssignmentModel => ({
   id: e.id,
   personId: e.personId,
   positionId: e.positionId,
+  kind: e.kind,
   validFrom: e.validFrom,
   validTo: e.validTo,
 });

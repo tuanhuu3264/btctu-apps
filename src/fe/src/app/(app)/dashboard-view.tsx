@@ -7,7 +7,9 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Donut, HBars, LineChart, StackBar } from '@/components/charts';
 import type { Segment } from '@/components/charts';
-import type { AssignmentState, Period, PeriodReport, SearchResult, Trend } from '@/lib/api';
+import { AttentionPanel, MODE_TEXT, MyResultsPanel, UnitLatePanel } from '@/components/dashboard-panels';
+import type { DashboardMode } from '@/components/dashboard-panels';
+import type { AssignmentState, Deadline, Period, PeriodReport, SearchResult, Trend } from '@/lib/api';
 import { dateText, num, STATE_COLORS, STATE_LABELS } from '@/lib/labels';
 import { useRemote } from '@/lib/use-remote';
 
@@ -103,7 +105,7 @@ function TrendPanel({ type, version }: { type: string; version: number }) {
   );
 }
 
-function ResultsPanel({ periods, report }: { periods: Period[]; report: PeriodReport | null }) {
+function ResultsPanel({ periods, report, mode, canReadAllTasks, canTasks, version }: { periods: Period[]; report: PeriodReport | null; mode: DashboardMode; canReadAllTasks: boolean; canTasks: boolean; version: number }) {
   const router = useRouter();
   const o = report?.overall;
   const ratings: Segment[] = RATING_SEGMENTS.map((r) => ({ label: r.label, color: r.color, value: o?.ratings[r.key] ?? 0 }));
@@ -147,6 +149,7 @@ function ResultsPanel({ periods, report }: { periods: Period[]; report: PeriodRe
               <Statistic title="Chờ phê duyệt" value={o.pendingApproval} styles={{ content: { color: o.pendingApproval > 0 ? '#b8860b' : undefined } }} />
             </Col>
           </Row>
+          {mode !== 'CA_NHAN' && (
           <Row gutter={[24, 16]}>
             <Col xs={24} lg={12}>
               <Typography.Text strong>Phân bố xếp loại (đã phê duyệt)</Typography.Text>
@@ -168,6 +171,9 @@ function ResultsPanel({ periods, report }: { periods: Period[]; report: PeriodRe
               </div>
             </Col>
           </Row>
+          )}
+          {mode !== 'CA_NHAN' && (
+          <>
           <div>
             <Typography.Text strong>Điểm trung bình theo đơn vị</Typography.Text>
             <div style={{ marginTop: 8 }}>
@@ -186,6 +192,27 @@ function ResultsPanel({ periods, report }: { periods: Period[]; report: PeriodRe
               )}
             </div>
           </div>
+          <div>
+            <Typography.Text strong>Tỷ lệ hồ sơ hoàn tất theo đơn vị</Typography.Text>
+            <div style={{ marginTop: 8 }}>
+              {units.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Chưa có hồ sơ." />
+              ) : (
+                <HBars
+                  max={100}
+                  rows={units.map((u) => ({
+                    label: u.unitName,
+                    value: u.completionRate === null ? null : u.completionRate * 100,
+                    text: pct(u.completionRate),
+                    hint: `${u.approved}/${u.evaluations} hồ sơ đã phê duyệt`,
+                  }))}
+                />
+              )}
+            </div>
+          </div>
+          {canTasks && <UnitLatePanel scope={canReadAllTasks ? 'all' : 'team'} version={version} />}
+          </>
+          )}
         </Space>
       )}
     </Card>
@@ -194,6 +221,11 @@ function ResultsPanel({ periods, report }: { periods: Period[]; report: PeriodRe
 
 interface Props {
   canTasks: boolean;
+  canReadAllTasks: boolean;
+  canReviews: boolean;
+  mode: DashboardMode;
+  myPersonId: string | null;
+  deadline: Deadline | null;
   periods: Period[];
   report: PeriodReport | null;
 }
@@ -205,7 +237,7 @@ const timeText = (d: Date) => d.toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho
  * Trang Tổng quan (ADR-027): mỗi khối chỉ hiện khi người dùng có quyền tương ứng. Tự làm mới mỗi phút khi tab đang mở
  * và ngay khi người dùng quay lại tab; có nút "Tải lại" để làm mới tay.
  */
-export default function DashboardView({ canTasks, periods, report }: Props) {
+export default function DashboardView({ canTasks, canReadAllTasks, canReviews, mode, myPersonId, deadline, periods, report }: Props) {
   const router = useRouter();
   const [version, setVersion] = useState(0);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -240,9 +272,15 @@ export default function DashboardView({ canTasks, periods, report }: Props) {
           Tải lại
         </Button>
       </Space>
+      <Space wrap>
+        <Tag color="red">Góc nhìn: {MODE_TEXT[mode].label}</Tag>
+        <Typography.Text type="secondary">{MODE_TEXT[mode].hint}</Typography.Text>
+      </Space>
+      <AttentionPanel version={version} report={report} deadline={deadline} canTeam={mode !== 'CA_NHAN' && canTasks} canReviews={canReviews} />
       {canTasks && <TasksPanel version={version} />}
-      {(report || periods.length > 0) && <ResultsPanel periods={periods} report={report} />}
-      {report && <TrendPanel type={report.period.type} version={version} />}
+      {mode === 'CA_NHAN' && <MyResultsPanel report={report} myPersonId={myPersonId} />}
+      {(report || periods.length > 0) && <ResultsPanel periods={periods} report={report} mode={mode} canReadAllTasks={canReadAllTasks} canTasks={canTasks} version={version} />}
+      {report && mode !== 'CA_NHAN' && <TrendPanel type={report.period.type} version={version} />}
     </Space>
   );
 }

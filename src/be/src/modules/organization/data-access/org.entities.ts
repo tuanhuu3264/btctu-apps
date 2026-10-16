@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import type { Gender, PoliticalTheory } from '../application/org.model.js';
+import type { OrgStatus } from '../application/unit.model.js';
 
 @Entity('person')
 export class PersonEntity {
@@ -93,6 +94,15 @@ export class JobPositionEntity {
   @Column({ name: 'reference_okr', type: 'text', nullable: true })
   referenceOkr: string | null;
 
+  @Column({ type: 'varchar', length: 10, default: 'ACTIVE' })
+  status: OrgStatus;
+
+  @Column({ name: 'inactive_at', type: 'timestamptz', nullable: true })
+  inactiveAt: Date | null;
+
+  @Column({ name: 'inactive_reason', type: 'varchar', length: 500, nullable: true })
+  inactiveReason: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
@@ -110,6 +120,9 @@ export class AssignmentEntity {
 
   @Column({ name: 'position_id', type: 'uuid' })
   positionId: string;
+
+  @Column({ type: 'varchar', length: 12, default: 'PRIMARY' })
+  kind: 'PRIMARY' | 'CONCURRENT';
 
   @Column({ name: 'valid_from', type: 'timestamptz' })
   validFrom: Date;

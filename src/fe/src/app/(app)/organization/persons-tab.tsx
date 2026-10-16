@@ -5,19 +5,12 @@ import { Alert, Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, S
 import { useEffect, useMemo, useState } from 'react';
 import type { Assignment, Gender, Person, PoliticalTheory } from '@/lib/api';
 import { apiCall, apiGet } from '@/lib/client';
-import { dateText } from '@/lib/labels';
+import { dateText, foldText } from '@/lib/labels';
+import ExportButtons from '@/components/export-buttons';
+import ChangeHistoryButton from '@/components/change-history';
 import { useAction } from '@/lib/use-action';
 import type { PositionRow } from './organization-view';
 
-/** Bỏ dấu và viết thường để tìm "thu nghiem" ra "Thử Nghiệm". */
-const foldText = (s: string) =>
-  s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/đ/g, 'd')
-    .replace(/Đ/g, 'D')
-    .toLowerCase()
-    .trim();
 
 interface Row extends Person {
   positionTitle: string | null;
@@ -218,7 +211,7 @@ function toValues(p: Person): PersonValues {
   return v;
 }
 
-export default function PersonsTab({ persons, positions }: { persons: Person[]; positions: PositionRow[] }) {
+export default function PersonsTab({ persons, positions, canAudit = false }: { persons: Person[]; positions: PositionRow[]; canAudit?: boolean }) {
   const { run, busy } = useAction();
   /** undefined: đóng; null: thêm mới; Person: sửa. */
   const [editing, setEditing] = useState<Person | null | undefined>(undefined);
@@ -227,12 +220,23 @@ export default function PersonsTab({ persons, positions }: { persons: Person[]; 
   const [search, setSearch] = useState('');
 
   const rows: Row[] = useMemo(() => {
-    const holderOf = new Map(positions.filter((p) => p.holder).map((p) => [p.holder!.personId, p]));
+    // Cán bộ kiêm nhiệm giữ nhiều vị trí: hiện vị trí chính trước, rồi các vị trí kiêm nhiệm.
+    const held = new Map<string, PositionRow[]>();
+    for (const p of [...positions].sort((a, b) => Number(a.holder?.kind === 'CONCURRENT') - Number(b.holder?.kind === 'CONCURRENT'))) {
+      if (p.holder) held.set(p.holder.personId, [...(held.get(p.holder.personId) ?? []), p]);
+    }
     const needle = foldText(search);
     return persons
       .filter((p) => showInactive || p.active)
       .filter((p) => !needle || foldText(p.fullName).includes(needle) || foldText(p.employeeCode ?? '').includes(needle))
-      .map((p) => ({ ...p, positionTitle: holderOf.get(p.id)?.title ?? null, unitName: holderOf.get(p.id)?.unitName ?? null }));
+      .map((p) => {
+        const mine = held.get(p.id) ?? [];
+        return {
+          ...p,
+          positionTitle: mine.length === 0 ? null : mine.map((x, i) => (i === 0 ? x.title : `${x.title} (kiêm nhiệm)`)).join('; '),
+          unitName: mine.length === 0 ? null : [...new Set(mine.map((x) => x.unitName))].join('; '),
+        };
+      });
   }, [persons, positions, showInactive, search]);
 
   const positionTitle = (id: string) => {
@@ -251,6 +255,7 @@ export default function PersonsTab({ persons, positions }: { persons: Person[]; 
           Thêm cán bộ
         </Button>
         <Input.Search allowClear placeholder="Tìm theo họ tên hoặc mã (không cần dấu)" style={{ width: 300 }} onChange={(e) => setSearch(e.target.value)} />
+        <ExportButtons path={`/org/export?list=persons&includeInactive=${showInactive}`} />
         <Space>
           <Switch checked={showInactive} onChange={setShowInactive} /> Hiện cả cán bộ đã ngừng quản lý
         </Space>
@@ -273,12 +278,13 @@ export default function PersonsTab({ persons, positions }: { persons: Person[]; 
           { title: 'Ghi chú', dataIndex: 'note', render: (n: string | null) => n ?? '–' },
           {
             title: '',
-            width: 250,
+            width: 340,
             render: (_: unknown, r) => (
               <Space>
                 <Button size="small" icon={<HistoryOutlined />} onClick={() => openHistory(r)}>
                   Lịch sử
                 </Button>
+                <ChangeHistoryButton targetType="person" targetId={r.id} title={r.fullName} canView={canAudit} />
                 <Button size="small" onClick={() => setEditing(r)}>
                   Sửa
                 </Button>

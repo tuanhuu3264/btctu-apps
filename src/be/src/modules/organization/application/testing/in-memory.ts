@@ -18,7 +18,7 @@ import { defaultIsLeader, EMPTY_PROFILE } from '../org.model.js';
 import { AssignmentRepository, PersonRepository, PositionRepository } from '../org.ports.js';
 import { PersonService } from '../person.service.js';
 import { PositionService } from '../position.service.js';
-import type { NewUnit, UnitModel, UnitPatch } from '../unit.model.js';
+import type { InactiveInfo, NewUnit, UnitModel, UnitPatch } from '../unit.model.js';
 import { UnitRepository } from '../unit.repository.js';
 import { UnitService } from '../unit.service.js';
 
@@ -49,7 +49,7 @@ export class InMemoryUnits extends UnitRepository {
     return this.rows.find((u) => u.code === code) ?? null;
   }
   async create(data: NewUnit) {
-    const row = { ...data, id: nextId('u') };
+    const row: UnitModel = { ...data, status: 'ACTIVE', inactiveAt: null, inactiveReason: null, id: nextId('u') };
     this.rows.push(row);
     return row;
   }
@@ -58,12 +58,10 @@ export class InMemoryUnits extends UnitRepository {
     Object.assign(row, patch);
     return row;
   }
-  /** Đơn vị "có vị trí" khi test đặt vào `inUse`. */
-  inUse = new Set<string>();
-  async delete(id: string): Promise<'OK' | 'IN_USE'> {
-    if (this.inUse.has(id)) return 'IN_USE';
-    this.rows = this.rows.filter((u) => u.id !== id);
-    return 'OK';
+  async setStatus(id: string, info: InactiveInfo) {
+    const row = this.rows.find((u) => u.id === id)!;
+    Object.assign(row, info);
+    return row;
   }
 }
 
@@ -111,7 +109,14 @@ export class InMemoryPositions extends PositionRepository {
     return this.rows.filter((p) => !filter?.unitId || p.unitId === filter.unitId);
   }
   async create(data: NewPosition) {
-    const row: PositionModel = { ...data, isLeader: data.isLeader ?? defaultIsLeader(data.level), id: nextId('pos') };
+    const row: PositionModel = {
+      ...data,
+      isLeader: data.isLeader ?? defaultIsLeader(data.level),
+      status: 'ACTIVE',
+      inactiveAt: null,
+      inactiveReason: null,
+      id: nextId('pos'),
+    };
     this.rows.push(row);
     return row;
   }
@@ -120,11 +125,10 @@ export class InMemoryPositions extends PositionRepository {
     Object.assign(row, patch);
     return row;
   }
-  inUse = new Set<string>();
-  async delete(id: string): Promise<'OK' | 'IN_USE'> {
-    if (this.inUse.has(id)) return 'IN_USE';
-    this.rows = this.rows.filter((p) => p.id !== id);
-    return 'OK';
+  async setStatus(id: string, info: InactiveInfo) {
+    const row = this.rows.find((p) => p.id === id)!;
+    Object.assign(row, info);
+    return row;
   }
 }
 
@@ -143,7 +147,7 @@ export class InMemoryAssignments extends AssignmentRepository {
     return this.rows.filter((a) => a.positionId === positionId);
   }
   async create(data: NewAssignment) {
-    const row = { ...data, id: nextId('as') };
+    const row: AssignmentModel = { ...data, id: nextId('as') };
     this.rows.push(row);
     return row;
   }

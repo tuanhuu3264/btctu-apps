@@ -1,3 +1,5 @@
+import type { InactiveInfo } from './unit.model.js';
+
 export const MIN_LEVEL = 1;
 export const MAX_LEVEL = 5;
 
@@ -68,7 +70,7 @@ export function toPublicPerson(person: PersonModel): PublicPerson {
 }
 
 /** Vị trí việc làm: một "ô" trong sơ đồ tổ chức, tách khỏi người đang giữ (ADR-012). */
-export interface PositionModel {
+export interface PositionModel extends InactiveInfo {
   id: string;
   /** Mã ổn định, duy nhất, để nhập lại từ Excel không tạo trùng. */
   code: string;
@@ -84,13 +86,18 @@ export interface PositionModel {
   referenceOkr: string | null;
 }
 /** Không nêu `isLeader` thì lấy theo cấp (`defaultIsLeader`). */
-export type NewPosition = Omit<PositionModel, 'id' | 'isLeader'> & { isLeader?: boolean };
-export type PositionPatch = Partial<Omit<PositionModel, 'id' | 'code'>>;
+export type NewPosition = Omit<PositionModel, 'id' | 'isLeader' | keyof InactiveInfo> & { isLeader?: boolean };
+export type PositionPatch = Partial<Omit<PositionModel, 'id' | 'code' | keyof InactiveInfo>>;
+
+/** PRIMARY: vị trí chính (mỗi cán bộ tối đa một tại mỗi thời điểm). CONCURRENT: kiêm nhiệm, được có nhiều cùng lúc (ADR-047). */
+export const ASSIGNMENT_KINDS = ['PRIMARY', 'CONCURRENT'] as const;
+export type AssignmentKind = (typeof ASSIGNMENT_KINDS)[number];
 
 export interface AssignmentModel {
   id: string;
   personId: string;
   positionId: string;
+  kind: AssignmentKind;
   validFrom: Date;
   /** null: đang giữ, chưa kết thúc. */
   validTo: Date | null;

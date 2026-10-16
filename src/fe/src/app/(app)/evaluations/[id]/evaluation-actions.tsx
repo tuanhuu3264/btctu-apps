@@ -19,7 +19,13 @@ interface Props {
   selfGeneralScore: number | null;
   /** Cán bộ lãnh đạo, quản lý được chấm thêm tiêu chí D; unitResult là gợi ý từ xếp loại của cấp dưới. */
   isLeader: boolean;
+  /** Kỳ năm: điểm là trung bình các tháng, không nhập điểm và chỉ tiêu (ADR-035). */
+  isYear: boolean;
+  /** Kỳ năm: đủ điều kiện xếp loại (từ 6 tháng); chưa đủ thì được đóng là "không xếp loại" (ADR-039). */
+  yearEnough: boolean;
   suggestedUnitResult: number | null;
+  /** Gợi ý tiêu chí đoàn kết từ phản ánh, khiếu nại về mất đoàn kết trong kỳ (ADR-040). */
+  suggestedSolidarity: { value: number; reason: string } | null;
   /** Công việc trong danh mục của kỳ, để chọn khi giao chỉ tiêu. */
   catalogItems: PickerItem[];
   catalogGroups: PickerGroup[];
@@ -34,7 +40,7 @@ const LEADERSHIP_OPTIONS = [
 const blank = (s?: string) => (s?.trim() ? s.trim() : undefined);
 const GENERAL_RULES = [{ required: true, message: 'Nhập điểm' }];
 
-export default function EvaluationActions({ evaluationId, status, periodOpen, permissions, tasks, selfGeneralScore, isLeader, suggestedUnitResult, catalogItems, catalogGroups, catalogTasks }: Props) {
+export default function EvaluationActions({ evaluationId, status, periodOpen, permissions, tasks, selfGeneralScore, isLeader, isYear, yearEnough, suggestedUnitResult, suggestedSolidarity, catalogItems, catalogGroups, catalogTasks }: Props) {
   const { run, busy } = useAction();
   const can = (p: string) => permissions.includes(p);
   const [returning, setReturning] = useState(false);
@@ -46,12 +52,14 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
   const [approveForm] = Form.useForm<{ comment?: string }>();
 
   const planned = status === 'PLANNED';
-  const canAssign = periodOpen && planned && can('evaluation:assign');
+  const canAssign = periodOpen && planned && can('evaluation:assign') && !isYear;
   const canSelf = periodOpen && planned && can('evaluation:self');
   const canReview = periodOpen && status === 'SELF_SUBMITTED' && can('evaluation:review');
   const canApprove = periodOpen && status === 'REVIEWED' && can('evaluation:approve');
 
-  if (!canAssign && !canSelf && !canReview && !canApprove) return null;
+  const canNotRated = periodOpen && isYear && !yearEnough && (planned || status === 'SELF_SUBMITTED') && can('evaluation:review');
+
+  if (!canAssign && !canSelf && !canReview && !canApprove && !canNotRated) return null;
 
   const saveResults = async (v: Record<string, number | string | undefined>) => {
     for (const t of tasks.filter((x) => x.sourceAssignmentIds.length === 0)) {
@@ -61,6 +69,26 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
 
   return (
     <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+      {canNotRated && (
+        <Card size="small" title="Không xếp loại (chưa đủ thời gian công tác)">
+          <Typography.Paragraph type="secondary">
+            Công chức có thời gian công tác trong năm chưa đủ 6 tháng thì không xếp loại (Nghị định 335 Điều 11.1). Tháng nghỉ có căn cứ do Văn phòng ghi nhận được tính vào thời gian. Hồ sơ đóng lại, không có điểm và xếp loại.
+          </Typography.Paragraph>
+          <Popconfirm
+            title="Đóng hồ sơ năm là không xếp loại?"
+            description="Hồ sơ sẽ khóa và không sửa được."
+            okText="Đóng hồ sơ"
+            okButtonProps={{ danger: true }}
+            cancelText="Hủy"
+            onConfirm={() => run(async () => void (await apiCall('POST', `/evaluation/evaluations/${evaluationId}/not-rated`, {})), { success: 'Đã đóng hồ sơ là không xếp loại' })}
+          >
+            <Button danger loading={busy}>
+              Không xếp loại
+            </Button>
+          </Popconfirm>
+        </Card>
+      )}
+
       {canAssign && (
         <Card size="small" title="Giao chỉ tiêu">
           <Form
@@ -115,8 +143,9 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
             layout="vertical"
             initialValues={Object.fromEntries(tasks.flatMap((t) => [[`done-${t.id}`, t.completedQuantity], [`ev-${t.id}`, t.evidence ?? '']]))}
           >
-            {tasks.length === 0 && <Typography.Paragraph type="secondary">Chưa có chỉ tiêu nào được giao.</Typography.Paragraph>}
-            {tasks.map((t) =>
+            {isYear && <Typography.Paragraph type="secondary">Điểm năm là trung bình cộng điểm các tháng đã phê duyệt, nên bạn không tự chấm điểm ở kỳ năm. Chỉ cần nộp hồ sơ để cấp trên thẩm định.</Typography.Paragraph>}
+            {!isYear && tasks.length === 0 && <Typography.Paragraph type="secondary">Chưa có chỉ tiêu nào được giao.</Typography.Paragraph>}
+            {(isYear ? [] : tasks).map((t) =>
               t.sourceAssignmentIds.length > 0 ? (
                 <Typography.Paragraph key={t.id}>
                   <Typography.Text strong>{t.catalogItemCode}</Typography.Text>: đã hoàn thành {t.completedQuantity}/{t.plannedQuantity} (lấy từ việc được giao, cấp trên đã xác nhận, không sửa ở đây).
@@ -136,17 +165,21 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
               ),
             )}
             <Space align="start" wrap>
-              <Form.Item name="general" label="Điểm tiêu chí chung (0–30)" rules={GENERAL_RULES}>
-                <InputNumber min={0} max={30} step={0.5} />
-              </Form.Item>
+              {!isYear && (
+                <Form.Item name="general" label="Điểm tiêu chí chung (0–30)" rules={GENERAL_RULES}>
+                  <InputNumber min={0} max={30} step={0.5} />
+                </Form.Item>
+              )}
               <Form.Item name="comment" label="Nhận xét">
                 <Input maxLength={2000} style={{ width: 360 }} />
               </Form.Item>
             </Space>
             <Space>
-              <Button loading={busy} onClick={() => run(async () => saveResults(selfForm.getFieldsValue()), { success: 'Đã lưu kết quả' })}>
-                Lưu kết quả
-              </Button>
+              {!isYear && (
+                <Button loading={busy} onClick={() => run(async () => saveResults(selfForm.getFieldsValue()), { success: 'Đã lưu kết quả' })}>
+                  Lưu kết quả
+                </Button>
+              )}
               <Button
                 type="primary"
                 loading={busy}
@@ -155,8 +188,8 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
                   if (!v) return;
                   await run(
                     async () => {
-                      await saveResults(v);
-                      await apiCall('POST', `/evaluation/evaluations/${evaluationId}/self-submit`, { generalScore: Number(v.general), comment: blank(v.comment as string | undefined) });
+                      if (!isYear) await saveResults(v);
+                      await apiCall('POST', `/evaluation/evaluations/${evaluationId}/self-submit`, { ...(isYear ? {} : { generalScore: Number(v.general) }), comment: blank(v.comment as string | undefined) });
                     },
                     { success: 'Đã gửi thẩm định' },
                   );
@@ -177,23 +210,29 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
             initialValues={{
               general: selfGeneralScore ?? undefined,
               ...(isLeader && suggestedUnitResult !== null ? { 'lead-unit': suggestedUnitResult } : {}),
+              ...(isLeader && suggestedSolidarity ? { 'lead-sol': suggestedSolidarity.value } : {}),
               ...Object.fromEntries(tasks.flatMap((t) => [[`c-${t.id}`, t.completedQuantity], [`q-${t.id}`, t.qualityLevel ?? undefined]])),
             }}
             onFinish={(v) =>
               run(
                 async () => {
                   await apiCall('POST', `/evaluation/evaluations/${evaluationId}/review`, {
-                    generalScore: Number(v.general),
                     comment: blank(v.comment as string | undefined),
-                    ...(isLeader ? { leadership: { unitResult: v['lead-unit'], organizing: v['lead-org'], solidarity: v['lead-sol'] } } : {}),
-                    tasks: tasks.map((t) => ({ taskId: t.id, qualityLevel: v[`q-${t.id}`] as number | undefined, completedQuantity: v[`c-${t.id}`] as number | undefined })),
+                    ...(isYear
+                      ? {}
+                      : {
+                          generalScore: Number(v.general),
+                          ...(isLeader ? { leadership: { unitResult: v['lead-unit'], organizing: v['lead-org'], solidarity: v['lead-sol'] } } : {}),
+                          tasks: tasks.map((t) => ({ taskId: t.id, qualityLevel: v[`q-${t.id}`] as number | undefined, completedQuantity: v[`c-${t.id}`] as number | undefined })),
+                        }),
                   });
                 },
                 { success: 'Đã chốt thẩm định' },
               )
             }
           >
-            {tasks.map((t) => (
+            {isYear && <Typography.Paragraph type="secondary">Điểm năm lấy trung bình cộng các tháng đã phê duyệt (xem bảng ở trên), bạn không nhập điểm. Nếu có tháng thiếu thuộc nghỉ ốm, thai sản thì ghi vào nhận xét.</Typography.Paragraph>}
+            {(isYear ? [] : tasks).map((t) => (
               <Space key={t.id} align="start" wrap>
                 <Typography.Text strong style={{ lineHeight: '32px', width: 60, display: 'inline-block' }}>
                   {t.catalogItemCode}
@@ -206,7 +245,7 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
                 </Form.Item>
               </Space>
             ))}
-            {isLeader && (
+            {isLeader && !isYear && (
               <Card size="small" type="inner" title="Tiêu chí D: lãnh đạo, chỉ đạo, điều hành (cán bộ lãnh đạo, quản lý)" style={{ marginBottom: 16 }}>
                 <Form.Item
                   name="lead-unit"
@@ -231,7 +270,7 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
                 <Form.Item
                   name="lead-sol"
                   label="Năng lực tập hợp, đoàn kết công chức"
-                  extra="100% nếu duy trì môi trường làm việc đoàn kết, phối hợp hiệu quả; 50% nếu phát sinh phản ánh, khiếu nại, mâu thuẫn mất đoàn kết kéo dài."
+                  extra={`100% nếu duy trì môi trường làm việc đoàn kết, phối hợp hiệu quả; 50% nếu phát sinh phản ánh, khiếu nại, mâu thuẫn mất đoàn kết kéo dài.${suggestedSolidarity ? ` Gợi ý: ${suggestedSolidarity.reason}` : ''}`}
                   rules={[{ required: true, message: 'Chọn mức' }]}
                   style={{ marginBottom: 0 }}
                 >
@@ -240,9 +279,11 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
               </Card>
             )}
             <Space align="start" wrap>
-              <Form.Item name="general" label="Điểm tiêu chí chung (0–30)" rules={GENERAL_RULES}>
-                <InputNumber min={0} max={30} step={0.5} />
-              </Form.Item>
+              {!isYear && (
+                <Form.Item name="general" label="Điểm tiêu chí chung (0–30)" rules={GENERAL_RULES}>
+                  <InputNumber min={0} max={30} step={0.5} />
+                </Form.Item>
+              )}
               <Form.Item name="comment" label="Nhận xét">
                 <Input maxLength={2000} style={{ width: 360 }} />
               </Form.Item>

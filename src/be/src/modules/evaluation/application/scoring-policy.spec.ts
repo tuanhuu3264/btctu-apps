@@ -90,6 +90,48 @@ describe('KPI theo Nghị định 335/2025/NĐ-CP Điều 14 đến 16: a số l
   });
 });
 
+describe('việc đột xuất (Nghị định 335/2025 Điều 18.1.d, ADR-046): tính ngoài số nhiệm vụ giao ban đầu, được tính thêm điểm', () => {
+  const extra = (coefficient: number, planned: number, completed: number, qualityLevel: number | null, lateCount = 0, reworkCount = 0): ScoredTask => ({
+    ...task(coefficient, planned, completed, qualityLevel, lateCount, reworkCount),
+    extra: true,
+  });
+
+  it('không vào mẫu số: chỉ có việc đột xuất thì không tính được (mẫu số bằng 0)', () => {
+    expect(kpiOf([extra(1, 5, 5, 1)], null, false)).toEqual({ quantity: 0, quality: 0, timeliness: 0, leadership: null, kpi: 0 });
+  });
+
+  it('việc thường đã đủ thì việc đột xuất không làm điểm vượt quá 100% mỗi thành phần', () => {
+    const k = kpiOf([task(1, 10, 10, 1), extra(2, 5, 5, 1)], null, false);
+    expect(k).toMatchObject({ quantity: 1, quality: 1, timeliness: 1, kpi: 1 });
+    expect(resultScore([task(1, 10, 10, 1), extra(2, 5, 5, 1)])).toBe(70);
+  });
+
+  it('bù cho phần thiếu của việc thường: thường 6/10, đột xuất hệ số 2 làm xong 2 → (6 + 4) / 10 = 100%', () => {
+    expect(kpiOf([task(1, 10, 6, 1)], null, false)).toMatchObject({ quantity: 0.6 });
+    expect(kpiOf([task(1, 10, 6, 1), extra(2, 2, 2, 1)], null, false)).toMatchObject({ quantity: 1, quality: 1, timeliness: 1, kpi: 1 });
+  });
+
+  it('bù một phần: thường 6/10, đột xuất hệ số 1 làm xong 2 → (6 + 2) / 10 = 80%', () => {
+    expect(kpiOf([task(1, 10, 6, 1), extra(1, 2, 2, 1)], null, false)).toMatchObject({ quantity: 0.8, quality: 0.8, timeliness: 0.8, kpi: 0.8 });
+    expect(resultScore([task(1, 10, 6, 1), extra(1, 2, 2, 1)])).toBe(56);
+  });
+
+  it('việc đột xuất cũng bị trừ 25% mỗi lần chậm hoặc chưa đạt; chưa đánh giá chất lượng thì chưa có kết quả', () => {
+    const k = kpiOf([task(1, 10, 6, 1), extra(1, 2, 2, 1, 1, 1)], null, false); // một lần chậm, một lần chưa đạt
+    expect(k).toMatchObject({ quantity: 0.8, quality: 0.75, timeliness: 0.75 });
+    expect(kpiOf([task(1, 10, 6, 1), extra(1, 2, 2, null)], null, false).quantity).toBe(0.6);
+  });
+
+  it('việc đột xuất chưa làm không kéo điểm xuống (không có trong mẫu số)', () => {
+    expect(kpiOf([task(1, 10, 10, 1), extra(3, 4, 0, null)], null, false).kpi).toBe(1);
+  });
+
+  it('lãnh đạo: d, đ, e vẫn tính riêng, a, b, c có việc đột xuất', () => {
+    const leadership: Leadership = { unitResult: 1, organizing: 1, solidarity: 1 };
+    expect(kpiOf([task(1, 10, 5, 1), extra(1, 5, 5, 1)], leadership, true).kpi).toBe(1);
+  });
+});
+
 describe('evaluate: điểm tổng và xếp loại', () => {
   it('cộng điểm chung và điểm kết quả, xếp loại theo ngưỡng', () => {
     const r = evaluate([task(1, 10, 10, 1), task(120 / 90, 3, 3, 2)], 25);

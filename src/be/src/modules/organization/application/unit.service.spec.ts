@@ -1,7 +1,9 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { Clock } from '../../../common/clock.js';
 import { AuditService } from '../../security/index.js';
-import type { NewUnit, UnitModel, UnitPatch } from './unit.model.js';
+import { PositionRepository } from './org.ports.js';
+import type { InactiveInfo, NewUnit, UnitModel, UnitPatch } from './unit.model.js';
 import { UnitRepository } from './unit.repository.js';
 import { UnitService } from './unit.service.js';
 
@@ -18,7 +20,7 @@ class InMemoryUnitRepository extends UnitRepository {
     return this.rows.find((u) => u.code === code) ?? null;
   }
   async create(data: NewUnit) {
-    const row = { ...data, id: `id-${this.rows.length + 1}` };
+    const row: UnitModel = { ...data, status: 'ACTIVE', inactiveAt: null, inactiveReason: null, id: `id-${this.rows.length + 1}` };
     this.rows.push(row);
     return row;
   }
@@ -27,20 +29,26 @@ class InMemoryUnitRepository extends UnitRepository {
     Object.assign(row, patch);
     return row;
   }
-  async delete(id: string): Promise<'OK' | 'IN_USE'> {
-    this.rows = this.rows.filter((u) => u.id !== id);
-    return 'OK';
+  async setStatus(id: string, info: InactiveInfo) {
+    const row = this.rows.find((u) => u.id === id)!;
+    Object.assign(row, info);
+    return row;
   }
 }
 
 describe('UnitService', () => {
   let service: UnitService;
+  const positionsStub = { findAll: async (): Promise<{ status: string }[]> => activePositions };
+  let activePositions: { status: string }[] = [];
 
   beforeEach(async () => {
+    activePositions = [];
     const moduleRef = await Test.createTestingModule({
       providers: [
         UnitService,
         { provide: UnitRepository, useClass: InMemoryUnitRepository },
+        { provide: PositionRepository, useValue: positionsStub },
+        { provide: Clock, useValue: { now: () => new Date('2026-10-16T00:00:00Z') } },
         { provide: AuditService, useValue: { record: async () => undefined } },
       ],
     }).compile();
@@ -83,13 +91,31 @@ describe('UnitService', () => {
     await expect(service.update(c.id, { parentId: 'khong-co' })).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('xóa đơn vị chưa có đơn vị con; còn đơn vị con thì từ chối', async () => {
+  it('ngừng đơn vị (xóa mềm): còn đơn vị con hoạt động thì từ chối; giữ dòng dữ liệu; kích hoạt lại được', async () => {
     const a = await service.create({ code: 'A', name: 'Ban A', type: 'BAN', parentId: null });
     const b = await service.create({ code: 'B', name: 'Phòng B', type: 'PHONG', parentId: a.id });
-    await expect(service.delete(a.id)).rejects.toBeInstanceOf(ConflictException);
-    await service.delete(b.id);
-    await service.delete(a.id);
-    expect(await service.list()).toHaveLength(0);
-    await expect(service.delete(a.id)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.deactivate(a.id)).rejects.toBeInstanceOf(ConflictException);
+    const off = await service.deactivate(b.id, ' Sáp nhập ');
+    expect(off).toMatchObject({ status: 'INACTIVE', inactiveReason: 'Sáp nhập' });
+    expect(off.inactiveAt).toBeInstanceOf(Date);
+    await service.deactivate(a.id);
+    expect(await service.list()).toHaveLength(2); // vẫn còn dòng
+    expect(await service.listActive()).toHaveLength(0);
+    await expect(service.deactivate(a.id)).rejects.toBeInstanceOf(ConflictException); // đã ngừng
+    await expect(service.deactivate('khong-co')).rejects.toBeInstanceOf(NotFoundException);
+
+    await expect(service.reactivate(b.id)).rejects.toBeInstanceOf(ConflictException); // cha còn ngừng
+    await service.reactivate(a.id);
+    expect(await service.reactivate(b.id)).toMatchObject({ status: 'ACTIVE', inactiveAt: null, inactiveReason: null });
+    await expect(service.reactivate(b.id)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('không ngừng đơn vị còn vị trí đang hoạt động; không tạo đơn vị con dưới đơn vị đã ngừng', async () => {
+    const a = await service.create({ code: 'A', name: 'Ban A', type: 'BAN', parentId: null });
+    activePositions = [{ status: 'ACTIVE' }];
+    await expect(service.deactivate(a.id)).rejects.toBeInstanceOf(ConflictException);
+    activePositions = [];
+    await service.deactivate(a.id);
+    await expect(service.create({ code: 'C', name: 'Phòng C', type: 'PHONG', parentId: a.id })).rejects.toBeInstanceOf(ConflictException);
   });
 });

@@ -20,6 +20,8 @@ const DEMO: { username: string; role: Role; fullName: string | null }[] = [
   { username: 'chuyenvien', role: 'CHUYEN_VIEN', fullName: 'Hồ Lê Nhân' },
   { username: 'vanphong', role: 'VAN_PHONG', fullName: 'Mai Thị Hoài Thu' },
   { username: 'quantridulieu', role: 'QUAN_TRI_DU_LIEU', fullName: null },
+  // Đại diện Ban Thường vụ thẩm định, phê duyệt hồ sơ tập thể của Ban (ADR-030); không gắn cán bộ.
+  { username: 'thuongvu', role: 'DAI_DIEN_THUONG_VU', fullName: null },
 ];
 
 const newPassword = () => `Demo-${randomBytes(9).toString('base64url')}-26`;

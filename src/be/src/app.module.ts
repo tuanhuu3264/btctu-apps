@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { RequestContextMiddleware } from './common/request-context.middleware.js';
 import { DatabaseModule } from './database/database.module.js';
 import { HealthController } from './health/health.controller.js';
+import { AccessReviewModule } from './modules/access-review/index.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { DocumentsModule } from './modules/documents/index.js';
 import { EvaluationModule } from './modules/evaluation/evaluation.module.js';
@@ -27,6 +28,7 @@ import { SecurityModule } from './modules/security/index.js';
     ScoringModule,
     ReportingModule,
     SecurityModule,
+    AccessReviewModule,
     IntegrationModule,
   ],
   controllers: [HealthController],

@@ -1,11 +1,12 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Clock } from '../../../common/clock.js';
 import { AuditService } from '../../security/index.js';
-import { buildDraft } from './draft-templates.js';
+import { buildDraft, buildUnitDecisionDraft } from './draft-templates.js';
 import type { Draft, DraftKind } from './draft-templates.js';
 import { buildPeriodReport } from './report-builder.js';
-import type { PeriodReport, ReportRow, Trend } from './report.model.js';
-import { EvaluationSource, OrgLookup, ReportRenderer } from './report.ports.js';
+import type { PeriodReport, ReportRow, Trend, UnitReport, UnitReportRow } from './report.model.js';
+import { EvaluationSource, OrgLookup, ReportRenderer, UnitEvaluationSource } from './report.ports.js';
+import { buildUnitReport } from './unit-report-builder.js';
 import type { ReportActor } from './report.ports.js';
 
 export type ExportFormat = 'xlsx' | 'pdf';
@@ -29,6 +30,7 @@ const CONTENT_TYPES: Record<ExportFormat, string> = {
 export class ReportService {
   constructor(
     private readonly source: EvaluationSource,
+    private readonly unitSource: UnitEvaluationSource,
     private readonly lookup: OrgLookup,
     private readonly renderer: ReportRenderer,
     private readonly clock: Clock,
@@ -104,7 +106,7 @@ export class ReportService {
       details: { period: period?.label, kind, format: 'docx', bytes: buffer.length },
     });
     return {
-      filename: `${kind === 'REPORT' ? 'du-thao-bao-cao' : 'du-thao-quyet-dinh'}-${period?.label ?? periodId}.docx`,
+      filename: `${kind === 'REPORT' ? 'du-thao-bao-cao' : kind === 'NOTICE' ? 'du-thao-thong-bao' : 'du-thao-quyet-dinh'}-${period?.label ?? periodId}.docx`,
       contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       buffer,
     };
@@ -125,6 +127,89 @@ export class ReportService {
       contentType: CONTENT_TYPES[format],
       buffer,
     };
+  }
+
+  // ------------------------------------------------------------ tập thể (ADR-031)
+
+  /** Báo cáo xếp loại tập thể của một kỳ năm, trong phạm vi người xem được. */
+  async unitReport(actor: ReportActor, periodId: string, canReadAll: boolean): Promise<UnitReport> {
+    const report = await this.buildUnits(actor, periodId, canReadAll);
+    await this.audit.record({
+      action: 'report.unit.view',
+      outcome: 'SUCCESS',
+      targetType: 'evaluation_period',
+      targetId: periodId,
+      details: { period: report.period.label, scope: report.scope, rows: report.rows.length },
+    });
+    return report;
+  }
+
+  async exportUnits(actor: ReportActor, periodId: string, canReadAll: boolean): Promise<ExportedFile> {
+    const report = await this.buildUnits(actor, periodId, canReadAll);
+    const buffer = await this.renderer.renderUnitExcel(report);
+    await this.audit.record({
+      action: 'report.unit.export',
+      outcome: 'SUCCESS',
+      targetType: 'evaluation_period',
+      targetId: periodId,
+      details: { period: report.period.label, format: 'xlsx', scope: report.scope, rows: report.rows.length, bytes: buffer.length },
+    });
+    return { filename: `bao-cao-tap-the-${report.period.label}.xlsx`, contentType: CONTENT_TYPES.xlsx, buffer };
+  }
+
+  /** Dự thảo quyết định công nhận xếp loại tập thể; cần quyền xem toàn bộ như dự thảo của cá nhân. */
+  async unitDraft(actor: ReportActor, periodId: string, canReadAll: boolean): Promise<Draft> {
+    if (!canReadAll) throw new ForbiddenException('Dự thảo văn bản tổng hợp cần quyền xem toàn bộ hồ sơ đánh giá của kỳ');
+    const report = await this.buildUnits(actor, periodId, true);
+    const draft = buildUnitDecisionDraft(report);
+    await this.audit.record({
+      action: 'report.unit.draft',
+      outcome: 'SUCCESS',
+      targetType: 'evaluation_period',
+      targetId: periodId,
+      details: { period: report.period.label, approvedCount: draft.approvedCount },
+    });
+    return draft;
+  }
+
+  async exportUnitDraft(actor: ReportActor, periodId: string, canReadAll: boolean): Promise<ExportedFile> {
+    const draft = await this.unitDraft(actor, periodId, canReadAll);
+    const period = await this.source.getPeriod(periodId);
+    const buffer = await this.renderer.renderDraftDocx(draft);
+    await this.audit.record({
+      action: 'report.unit.draft.export',
+      outcome: 'SUCCESS',
+      targetType: 'evaluation_period',
+      targetId: periodId,
+      details: { period: period?.label, format: 'docx', bytes: buffer.length },
+    });
+    return {
+      filename: `du-thao-quyet-dinh-tap-the-${period?.label ?? periodId}.docx`,
+      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      buffer,
+    };
+  }
+
+  private async buildUnits(actor: ReportActor, periodId: string, canReadAll: boolean): Promise<UnitReport> {
+    const period = await this.source.getPeriod(periodId);
+    if (!period) throw new NotFoundException(`Không tìm thấy kỳ đánh giá: ${periodId}`);
+    if (period.type !== 'YEAR') throw new BadRequestException('Chỉ xếp loại tập thể theo năm (Nghị định 335 Điều 9.1)');
+    const [records, persons] = await Promise.all([this.unitSource.list(actor, periodId, canReadAll), this.lookup.persons()]);
+    const rows: UnitReportRow[] = records.map((r) => ({
+      evaluationId: r.id,
+      unitCode: r.unitCode,
+      unitName: r.unitName,
+      unitType: r.unitType,
+      headName: r.headPersonId ? (persons.get(r.headPersonId)?.fullName ?? '(không rõ)') : '(chưa có người đứng đầu)',
+      status: r.status,
+      generalScore: r.generalScore,
+      resultScore: r.resultScore,
+      totalScore: r.totalScore,
+      rating: r.rating,
+      warnings: r.warnings,
+      axes: r.axes,
+    }));
+    return buildUnitReport({ period, rows, scope: canReadAll ? 'ALL' : 'LIMITED', generatedAt: this.clock.now() });
   }
 
   private async build(actor: ReportActor, periodId: string, canReadAll: boolean): Promise<PeriodReport> {

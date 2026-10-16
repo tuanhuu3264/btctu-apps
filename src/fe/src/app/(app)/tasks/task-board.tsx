@@ -1,12 +1,13 @@
 'use client';
 
-import { ReloadOutlined } from '@ant-design/icons';
+import { BarChartOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Alert, Button, DatePicker, Input, Radio, Select, Space } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import type { AssignmentState, AssignmentView, SearchResult, SearchScope } from '@/lib/api';
-import { apiGet } from '@/lib/client';
-import { STATE_LABELS } from '@/lib/labels';
+import type { AssignmentState, AssignmentView, SearchResult, SearchScope, WorkKind } from '@/lib/api';
+import { API_URL, apiGet } from '@/lib/client';
+import { STATE_LABELS, WORK_KIND_LABELS } from '@/lib/labels';
 import AssignmentTable from './assignment-table';
+import TaskStatisticsModal from './task-statistics-modal';
 
 type DayValue = { format: (pattern: string) => string } | null;
 
@@ -25,7 +26,7 @@ interface Props {
   onOpen: (view: AssignmentView) => void;
 }
 
-const STATES: AssignmentState[] = ['IN_PROGRESS', 'PENDING_CONFIRM', 'OVERDUE', 'DONE', 'CANCELLED'];
+const STATES: AssignmentState[] = ['PROPOSED', 'IN_PROGRESS', 'PENDING_CONFIRM', 'OVERDUE', 'DONE', 'CANCELLED'];
 const SORTS = [
   { value: 'due', label: 'Hạn gần nhất trước' },
   { value: 'dueDesc', label: 'Hạn xa nhất trước' },
@@ -48,6 +49,8 @@ export default function TaskBoard({ scope, stamp, myPersonId, names, assigneeOpt
   const [q, setQ] = useState('');
   const [state, setState] = useState<AssignmentState | 'ALL'>('ALL');
   const [assignee, setAssignee] = useState<string | undefined>(undefined);
+  const [kind, setKind] = useState<WorkKind | undefined>(undefined);
+  const [showStats, setShowStats] = useState(false);
   const [due, setDue] = useState<[DayValue, DayValue] | null>(null);
   const [sort, setSort] = useState('due');
   const [page, setPage] = useState(1);
@@ -72,6 +75,7 @@ export default function TaskBoard({ scope, stamp, myPersonId, names, assigneeOpt
   if (q) params.set('q', q);
   if (state !== 'ALL') params.set('states', state);
   if (assignee) params.set('assigneePersonId', assignee);
+  if (kind) params.set('kind', kind);
   if (due?.[0]) params.set('dueFrom', due[0].format('YYYY-MM-DD'));
   if (due?.[1]) params.set('dueTo', due[1].format('YYYY-MM-DD'));
   const key = `${params}#${stamp}#${reload}`;
@@ -93,12 +97,17 @@ export default function TaskBoard({ scope, stamp, myPersonId, names, assigneeOpt
       });
   }, [key]);
 
-  const filtered = q !== '' || state !== 'ALL' || assignee !== undefined || due !== null;
+  const filtered = q !== '' || state !== 'ALL' || assignee !== undefined || kind !== undefined || due !== null;
+  // Xuất và thống kê dùng đúng bộ lọc đang chọn, không phân trang.
+  const filterParams = new URLSearchParams(params);
+  for (const k of ['page', 'pageSize', 'sort']) filterParams.delete(k);
+  const filterQuery = filterParams.toString();
   const reset = () => {
     setQInput('');
     setQ('');
     setState('ALL');
     setAssignee(undefined);
+    setKind(undefined);
     setDue(null);
     setSort('due');
     setPage(1);
@@ -124,6 +133,17 @@ export default function TaskBoard({ scope, stamp, myPersonId, names, assigneeOpt
             }}
           />
         )}
+        <Select
+          allowClear
+          placeholder="Loại việc"
+          style={{ width: 160 }}
+          value={kind}
+          options={(Object.keys(WORK_KIND_LABELS) as WorkKind[]).map((k) => ({ value: k, label: WORK_KIND_LABELS[k] }))}
+          onChange={(v) => {
+            setKind(v);
+            setPage(1);
+          }}
+        />
         <DatePicker.RangePicker
           format="DD/MM/YYYY"
           placeholder={['Hạn từ', 'đến']}
@@ -138,7 +158,17 @@ export default function TaskBoard({ scope, stamp, myPersonId, names, assigneeOpt
           Tải lại
         </Button>
         {filtered && <Button onClick={reset}>Bỏ lọc</Button>}
+        <Button icon={<BarChartOutlined />} onClick={() => setShowStats(true)}>
+          Thống kê
+        </Button>
+        <Button icon={<DownloadOutlined />} href={`${API_URL}/tasking/assignments/export?${filterQuery}&format=xlsx`}>
+          Xuất Excel
+        </Button>
+        <Button icon={<DownloadOutlined />} href={`${API_URL}/tasking/assignments/export?${filterQuery}&format=pdf`}>
+          Xuất PDF
+        </Button>
       </Space>
+      {showStats && <TaskStatisticsModal query={filterQuery} onClose={() => setShowStats(false)} />}
 
       <Radio.Group
         optionType="button"

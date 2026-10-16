@@ -45,7 +45,10 @@ export interface ExcellentQuota {
 }
 
 export interface Stats {
+  /** Số hồ sơ (phiếu). Cán bộ kiêm nhiệm có một phiếu cho mỗi vị trí nên số phiếu có thể lớn hơn số người (ADR-047). */
   evaluations: number;
+  /** Số cán bộ khác nhau có hồ sơ (đã loại trùng người kiêm nhiệm). */
+  people: number;
   approved: number;
   /** Đã thẩm định, chờ phê duyệt. */
   pendingApproval: number;
@@ -101,5 +104,76 @@ export interface PeriodReport {
   overall: Stats;
   byUnit: UnitStats[];
   rows: ReportRow[];
+  notes: string[];
+}
+
+/** Một hồ sơ đánh giá tập thể đã ghép tên người đứng đầu (ADR-030, ADR-031). Không chứa nhận xét. */
+export interface UnitReportRow {
+  evaluationId: string;
+  unitCode: string;
+  unitName: string;
+  unitType: 'BAN' | 'PHONG';
+  headName: string;
+  status: ReportStatus;
+  generalScore: number | null;
+  resultScore: number | null;
+  totalScore: number | null;
+  rating: ReportRating | null;
+  /** Số điều kiện xếp loại chưa đạt hoặc cảnh báo hạn mức; chi tiết xem ở hồ sơ. */
+  warnings: number;
+  /** Điểm từng trục do người thẩm định chấm (ADR-036); rỗng khi hồ sơ chấm một số hoặc chưa thẩm định. */
+  axes: ReportAxisScore[];
+}
+
+/** Điểm một trục của một hồ sơ tập thể, kèm ảnh chụp định nghĩa trục lúc chấm. */
+export interface ReportAxisScore {
+  code: string;
+  name: string;
+  kind: 'GENERAL' | 'RESULT';
+  maxPoints: number;
+  points: number;
+}
+
+/** Tổng hợp một trục trên các hồ sơ đã phê duyệt có chấm theo trục (ADR-037). */
+export interface AxisSummary {
+  code: string;
+  name: string;
+  kind: 'GENERAL' | 'RESULT';
+  maxPoints: number;
+  /** Số hồ sơ đã phê duyệt có điểm trục này. */
+  count: number;
+  /** Trung bình điểm; null khi chưa có hồ sơ nào. */
+  average: number | null;
+  /** Tỷ lệ trung bình trên điểm tối đa, 0 đến 1, để so sánh trục có điểm tối đa khác nhau. */
+  ratio: number | null;
+  lowest: number | null;
+}
+
+/**
+ * Hạn mức xuất sắc của tập thể (Nghị định 335 Điều 8.5.a): không quá 20% số tổ chức hoàn thành tốt.
+ * `allowed` là số thực (ví dụ 0,8) vì điều khoản không nêu cách làm tròn; ngoại lệ 25% chưa tính.
+ */
+export interface UnitQuota {
+  excellent: number;
+  good: number;
+  allowed: number;
+  exceeded: boolean;
+}
+
+export interface UnitReport {
+  period: ReportPeriod;
+  scope: 'ALL' | 'LIMITED';
+  generatedAt: Date;
+  units: number;
+  approved: number;
+  pendingApproval: number;
+  inProgress: number;
+  /** Chỉ tính hồ sơ đã phê duyệt. */
+  ratings: RatingCounts;
+  averageTotal: number | null;
+  quota: UnitQuota;
+  /** Trung bình từng trục, chỉ tính hồ sơ đã phê duyệt có chấm theo trục (ADR-037). */
+  axisSummary: AxisSummary[];
+  rows: UnitReportRow[];
   notes: string[];
 }

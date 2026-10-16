@@ -1,7 +1,8 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { RequirePermission } from '../../security/index.js';
 import { UnitService } from '../application/unit.service.js';
-import { CreateUnitDto, UpdateUnitDto } from './create-unit.dto.js';
+import { CreateUnitDto, DeactivateDto, UpdateUnitDto } from './create-unit.dto.js';
+import { IncludeInactiveQueryDto } from './org.dto.js';
 import { definedOnly } from './org.dto.js';
 
 @Controller('units')
@@ -10,8 +11,8 @@ export class UnitController {
 
   @Get()
   @RequirePermission('org:read')
-  list() {
-    return this.units.list();
+  list(@Query() query: IncludeInactiveQueryDto) {
+    return query.includeInactive === 'true' ? this.units.list() : this.units.listActive();
   }
 
   @Post()
@@ -26,10 +27,17 @@ export class UnitController {
     return this.units.update(id, definedOnly(dto));
   }
 
+  /** "Xóa" đơn vị: đổi sang INACTIVE, không xóa dòng (PLAN-A A1). */
   @Delete(':id')
-  @HttpCode(204)
   @RequirePermission('org:manage')
-  async remove(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    await this.units.delete(id);
+  remove(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DeactivateDto) {
+    return this.units.deactivate(id, dto?.reason);
+  }
+
+  @Post(':id/reactivate')
+  @HttpCode(200)
+  @RequirePermission('org:manage')
+  reactivate(@Param('id', ParseUUIDPipe) id: string) {
+    return this.units.reactivate(id);
   }
 }

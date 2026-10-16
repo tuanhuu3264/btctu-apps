@@ -18,9 +18,11 @@ export interface PeriodModel {
   /** Phiên bản danh mục đã phê duyệt dùng để tính hệ số của kỳ này. */
   catalogVersionId: string;
   status: PeriodStatus;
+  /** Hạn hoàn thành đánh giá năm khi đã gia hạn (15/12 đến 15/01 năm sau); null là hạn mặc định 15/12 (ADR-038). */
+  ratingDeadline: string | null;
   createdBy: string | null;
 }
-export type NewPeriod = Omit<PeriodModel, 'id' | 'status'>;
+export type NewPeriod = Omit<PeriodModel, 'id' | 'status' | 'ratingDeadline'>;
 
 /** Luồng của hồ sơ (ADR-014 mục 3). APPROVED là trạng thái cuối, khóa hồ sơ. */
 export type EvaluationStatus = 'PLANNED' | 'SELF_SUBMITTED' | 'REVIEWED' | 'APPROVED';
@@ -45,6 +47,8 @@ export interface EvaluationModel {
   approvedAt: Date | null;
   approveComment: string | null;
   returnReason: string | null;
+  /** Hồ sơ năm đóng với "không xếp loại" (Điều 11.1): lý do; null với hồ sơ bình thường (ADR-039). */
+  notRatedReason: string | null;
   /** Kết quả tính khi thẩm định (đề xuất) và giữ nguyên khi phê duyệt. */
   resultScore: number | null;
   totalScore: number | null;

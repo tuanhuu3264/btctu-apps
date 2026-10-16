@@ -1,6 +1,10 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import type { Rating } from '../../scoring/index.js';
 import type { EvaluationStatus, PeriodStatus, PeriodType } from '../application/evaluation.model.js';
+import type { AutoMetric, AxisKind, AxisScore } from '../application/unit-axes.js';
+import type { ComplaintKind, ComplaintOutcome, ComplaintStatus } from '../application/unit-complaint.js';
+import type { LeaveReason } from '../application/leave.js';
+import type { UnitMetrics } from '../application/unit-evaluation.model.js';
 
 /** PostgreSQL trả numeric dạng chuỗi; chuyển về số (hoặc null) khi đọc. */
 const numeric = {
@@ -36,6 +40,9 @@ export class EvaluationPeriodEntity {
 
   @Column({ type: 'varchar', length: 8, default: 'OPEN' })
   status: PeriodStatus;
+
+  @Column({ name: 'rating_deadline', type: 'date', nullable: true })
+  ratingDeadline: string | null;
 
   @Column({ name: 'created_by', type: 'uuid', nullable: true })
   createdBy: string | null;
@@ -93,6 +100,9 @@ export class EvaluationEntity {
 
   @Column({ name: 'return_reason', type: 'text', nullable: true })
   returnReason: string | null;
+
+  @Column({ name: 'not_rated_reason', type: 'text', nullable: true })
+  notRatedReason: string | null;
 
   @Column({ name: 'result_score', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numeric })
   resultScore: number | null;
@@ -159,4 +169,196 @@ export class EvaluationTaskEntity {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
+}
+
+@Entity('unit_evaluation')
+export class UnitEvaluationEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'period_id', type: 'uuid' })
+  periodId: string;
+
+  @Column({ name: 'unit_id', type: 'uuid' })
+  unitId: string;
+
+  @Column({ type: 'varchar', length: 16, default: 'PLANNED' })
+  status: EvaluationStatus;
+
+  @Column({ name: 'self_general_score', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numeric })
+  selfGeneralScore: number | null;
+
+  @Column({ name: 'self_result_score', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numeric })
+  selfResultScore: number | null;
+
+  @Column({ name: 'self_comment', type: 'text', nullable: true })
+  selfComment: string | null;
+
+  @Column({ name: 'self_submitted_at', type: 'timestamptz', nullable: true })
+  selfSubmittedAt: Date | null;
+
+  @Column({ name: 'general_score', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numeric })
+  generalScore: number | null;
+
+  @Column({ name: 'result_score', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numeric })
+  resultScore: number | null;
+
+  @Column({ name: 'review_comment', type: 'text', nullable: true })
+  reviewComment: string | null;
+
+  @Column({ name: 'reviewer_account_id', type: 'uuid', nullable: true })
+  reviewerAccountId: string | null;
+
+  @Column({ name: 'reviewed_at', type: 'timestamptz', nullable: true })
+  reviewedAt: Date | null;
+
+  @Column({ name: 'approver_account_id', type: 'uuid', nullable: true })
+  approverAccountId: string | null;
+
+  @Column({ name: 'approved_at', type: 'timestamptz', nullable: true })
+  approvedAt: Date | null;
+
+  @Column({ name: 'approve_comment', type: 'text', nullable: true })
+  approveComment: string | null;
+
+  @Column({ name: 'return_reason', type: 'text', nullable: true })
+  returnReason: string | null;
+
+  @Column({ name: 'total_score', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numeric })
+  totalScore: number | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  rating: Rating | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  metrics: UnitMetrics | null;
+
+  @Column({ name: 'self_axis_scores', type: 'jsonb', nullable: true })
+  selfAxisScores: AxisScore[] | null;
+
+  @Column({ name: 'axis_scores', type: 'jsonb', nullable: true })
+  axisScores: AxisScore[] | null;
+
+  @Column({ name: 'created_by', type: 'uuid', nullable: true })
+  createdBy: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt: Date;
+}
+
+/** Định nghĩa trục chấm điểm tập thể (ADR-036). */
+@Entity('unit_axis')
+export class UnitAxisEntity {
+  @PrimaryColumn({ type: 'varchar', length: 10 })
+  code: string;
+
+  @Column({ type: 'varchar', length: 200 })
+  name: string;
+
+  @Column({ type: 'varchar', length: 8 })
+  kind: AxisKind;
+
+  @Column({ name: 'max_points', type: 'numeric', precision: 5, scale: 2, transformer: numeric })
+  maxPoints: number;
+
+  @Column({ name: 'sort_order', type: 'int', default: 0 })
+  sortOrder: number;
+
+  @Column({ name: 'auto_metric', type: 'varchar', length: 24, nullable: true })
+  autoMetric: AutoMetric | null;
+
+  @Column({ type: 'boolean', default: true })
+  active: boolean;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt: Date;
+}
+
+/** Khiếu nại, phản ánh về tập thể trong một kỳ năm (ADR-038). */
+@Entity('unit_complaint')
+export class UnitComplaintEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'unit_id', type: 'uuid' })
+  unitId: string;
+
+  @Column({ name: 'period_id', type: 'uuid' })
+  periodId: string;
+
+  @Column({ type: 'varchar', length: 16 })
+  kind: ComplaintKind;
+
+  @Column({ type: 'text' })
+  content: string;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  source: string | null;
+
+  @Column({ name: 'received_on', type: 'date' })
+  receivedOn: string;
+
+  @Column({ type: 'varchar', length: 10, default: 'RECEIVED' })
+  status: ComplaintStatus;
+
+  @Column({ name: 'created_by', type: 'uuid', nullable: true })
+  createdBy: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  assignee: string | null;
+
+  @Column({ name: 'verify_due', type: 'date', nullable: true })
+  verifyDue: string | null;
+
+  @Column({ name: 'verify_directed_by', type: 'uuid', nullable: true })
+  verifyDirectedBy: string | null;
+
+  @Column({ name: 'verify_directed_at', type: 'timestamptz', nullable: true })
+  verifyDirectedAt: Date | null;
+
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  outcome: ComplaintOutcome | null;
+
+  @Column({ type: 'text', nullable: true })
+  conclusion: string | null;
+
+  @Column({ name: 'closed_by', type: 'uuid', nullable: true })
+  closedBy: string | null;
+
+  @Column({ name: 'closed_at', type: 'timestamptz', nullable: true })
+  closedAt: Date | null;
+}
+
+/** Tháng nghỉ của cán bộ được miễn tính khi đánh giá năm (ADR-039). */
+@Entity('leave_record')
+export class LeaveRecordEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'person_id', type: 'uuid' })
+  personId: string;
+
+  @Column({ type: 'smallint' })
+  year: number;
+
+  @Column({ type: 'smallint' })
+  month: number;
+
+  @Column({ type: 'varchar', length: 12 })
+  reason: LeaveReason;
+
+  @Column({ type: 'text', nullable: true })
+  note: string | null;
+
+  @Column({ name: 'created_by', type: 'uuid', nullable: true })
+  createdBy: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
 }

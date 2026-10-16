@@ -1,3 +1,4 @@
+import { snapshot } from '../../../common/audit-snapshot.js';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Clock } from '../../../common/clock.js';
 import { AccountService, AuditService } from '../../security/index.js';
@@ -63,6 +64,8 @@ export class PersonService {
         changed: Object.keys(clean),
         sensitiveChanged: SENSITIVE_PERSON_FIELDS.filter((f) => f in clean),
         previousFullName: current.fullName,
+        before: snapshot(current, Object.keys(clean), SENSITIVE_PERSON_FIELDS),
+        after: snapshot(updated, Object.keys(clean), SENSITIVE_PERSON_FIELDS),
       },
     });
     return updated;

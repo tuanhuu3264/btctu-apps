@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Clock } from '../../../common/clock.js';
 import { AuditService } from './audit.service.js';
-import { isLive, ROLES } from './authorization.model.js';
-import type { Role, RoleAssignmentModel } from './authorization.model.js';
+import { isEffective, isLive, ROLES } from './authorization.model.js';
+import type { AccountSummary, Role, RoleAssignmentModel } from './authorization.model.js';
 import { AccountRepository, RoleAssignmentRepository } from './ports.js';
 import { EXCLUSIVE_ROLES } from './role-permissions.js';
 import type { CurrentAccount } from './security.model.js';
@@ -27,6 +27,15 @@ export class RoleService {
     const rows = await this.assignments.findByAccount(accountId);
     await this.audit.record({ action: 'role.list', outcome: 'SUCCESS', targetType: 'account', targetId: accountId });
     return rows;
+  }
+
+  /** Mọi vai trò đang có hiệu lực của các tài khoản còn hoạt động. Dùng cho rà soát quyền (ADR-044); không ghi nhật ký riêng. */
+  async listEffective(): Promise<{ assignment: RoleAssignmentModel; account: AccountSummary }[]> {
+    const now = this.clock.now();
+    const accounts = new Map((await this.accounts.findAll()).filter((a) => a.status === 'ACTIVE').map((a) => [a.id, a]));
+    return (await this.assignments.findLive(now))
+      .filter((a) => isEffective(a, now) && accounts.has(a.accountId))
+      .map((assignment) => ({ assignment, account: accounts.get(assignment.accountId)! }));
   }
 
   /**

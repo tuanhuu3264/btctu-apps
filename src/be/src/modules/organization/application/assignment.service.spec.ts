@@ -19,7 +19,7 @@ describe('phân công cán bộ vào vị trí', () => {
 
     const tree = await org.query.tree();
     const holder = tree[0].positions.find((p) => p.id === chain.l3.id)?.holder;
-    expect(holder).toEqual({ personId: a.id, fullName: 'Nguyễn Văn A' });
+    expect(holder).toEqual({ personId: a.id, fullName: 'Nguyễn Văn A', kind: 'PRIMARY' });
     expect(tree[0].positions.find((p) => p.id === chain.l2.id)?.holder).toBeNull();
   });
 
@@ -30,6 +30,64 @@ describe('phân công cán bộ vào vị trí', () => {
 
     await expect(org.assignments.assign(chain.l4.id, a.id)).rejects.toBeInstanceOf(ConflictException);
     await expect(org.assignments.assign(chain.l3.id, b.id)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  describe('kiêm nhiệm (ADR-047)', () => {
+    it('một người có một vị trí chính và nhiều vị trí kiêm nhiệm cùng lúc', async () => {
+      const a = await person('Nguyễn Văn A');
+      await org.assignments.assign(chain.l5.id, a.id);
+      const k1 = await org.assignments.assign(chain.l3.id, a.id, undefined, 'CONCURRENT');
+      const k2 = await org.assignments.assign(chain.l4.id, a.id, undefined, 'CONCURRENT');
+
+      expect([k1.kind, k2.kind]).toEqual(['CONCURRENT', 'CONCURRENT']);
+      const placements = await org.query.currentPlacementsOf(a.id);
+      expect(placements.map((p) => [p.position.id, p.kind])).toEqual([
+        [chain.l5.id, 'PRIMARY'],
+        [chain.l3.id, 'CONCURRENT'],
+        [chain.l4.id, 'CONCURRENT'],
+      ]);
+      expect((await org.query.currentPositionOf(a.id))?.id).toBe(chain.l5.id);
+      const tree = await org.query.tree();
+      expect(tree[0].positions.find((p) => p.id === chain.l3.id)?.holder).toEqual({ personId: a.id, fullName: 'Nguyễn Văn A', kind: 'CONCURRENT' });
+    });
+
+    it('hai vị trí chính cùng lúc vẫn bị chặn; kiêm nhiệm không giữ trùng vị trí đã có người', async () => {
+      const a = await person('Nguyễn Văn A');
+      const b = await person('Trần Thị B');
+      await org.assignments.assign(chain.l5.id, a.id);
+      await org.assignments.assign(chain.l3.id, b.id);
+
+      await expect(org.assignments.assign(chain.l4.id, a.id)).rejects.toBeInstanceOf(ConflictException);
+      await expect(org.assignments.assign(chain.l3.id, a.id, undefined, 'CONCURRENT')).rejects.toBeInstanceOf(ConflictException);
+      await expect(org.assignments.assign(chain.l5.id, a.id, undefined, 'CONCURRENT')).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('kiêm nhiệm cần đã có vị trí chính', async () => {
+      const a = await person('Nguyễn Văn A');
+      await expect(org.assignments.assign(chain.l3.id, a.id, undefined, 'CONCURRENT')).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('không kết thúc vị trí chính khi còn kiêm nhiệm; kết thúc kiêm nhiệm trước thì được', async () => {
+      const a = await person('Nguyễn Văn A');
+      const main = await org.assignments.assign(chain.l5.id, a.id);
+      const extra = await org.assignments.assign(chain.l3.id, a.id, undefined, 'CONCURRENT');
+      org.clock.advanceDays(10);
+
+      await expect(org.assignments.end(main.id)).rejects.toBeInstanceOf(ConflictException);
+      await org.assignments.end(extra.id);
+      await org.assignments.end(main.id);
+      expect(await org.query.currentPlacementsOf(a.id)).toEqual([]);
+    });
+
+    it('kiêm nhiệm kết thúc thì vị trí đó trống và người khác nhận được', async () => {
+      const a = await person('Nguyễn Văn A');
+      const b = await person('Trần Thị B');
+      await org.assignments.assign(chain.l5.id, a.id);
+      const extra = await org.assignments.assign(chain.l3.id, a.id, undefined, 'CONCURRENT');
+      org.clock.advanceDays(5);
+      await org.assignments.end(extra.id);
+      await expect(org.assignments.assign(chain.l3.id, b.id)).resolves.toBeDefined();
+    });
   });
 
   it('chuyển công tác: kết thúc phân công cũ rồi nhận vị trí mới, lịch sử được giữ', async () => {

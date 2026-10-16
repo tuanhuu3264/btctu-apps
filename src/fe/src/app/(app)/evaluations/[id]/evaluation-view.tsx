@@ -2,7 +2,7 @@
 
 import { Alert, Card, Col, Descriptions, Row, Statistic, Steps, Table, Tag, Typography } from 'antd';
 import { RatingTag, StatusTag } from '@/components/status-tags';
-import type { EvaluationDetail, EvaluationTask } from '@/lib/api';
+import type { EvaluationDetail, EvaluationTask, PeriodAverage } from '@/lib/api';
 import { num, QUALITY_LABELS } from '@/lib/labels';
 
 const pct = (x: number | null) => (x === null ? '–' : `${(x * 100).toFixed(1).replace('.', ',')}%`);
@@ -30,6 +30,7 @@ export default function EvaluationView({ detail, subject, reviewerName, approver
         items={[{ title: 'Giao mục tiêu, thực hiện' }, { title: 'Tự đánh giá' }, { title: 'Thẩm định' }, { title: 'Phê duyệt' }]}
       />
 
+      {ev.notRatedReason && <Alert type="info" showIcon style={{ marginBottom: 16 }} message="Không xếp loại" description={ev.notRatedReason} />}
       {ev.returnReason && ev.status === 'PLANNED' && <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="Hồ sơ bị trả lại" description={ev.returnReason} />}
 
       <Descriptions
@@ -47,7 +48,72 @@ export default function EvaluationView({ detail, subject, reviewerName, approver
         ]}
       />
 
-      <Card size="small" title="Chỉ tiêu" style={{ marginBottom: 16 }}>
+      {detail.yearAverage && (
+        <Card size="small" title="Điểm năm bằng trung bình cộng các tháng đã phê duyệt" style={{ marginBottom: 16 }}>
+          <Typography.Paragraph type="secondary">
+            Theo Nghị định 335 Điều 17.3, điểm năm là trung bình cộng điểm các tháng. Cần ít nhất 6 tháng đã phê duyệt mới xếp loại (Điều 11.1). Người thẩm định không nhập lại điểm.
+          </Typography.Paragraph>
+          <Table
+            rowKey="month"
+            size="small"
+            pagination={false}
+            dataSource={detail.yearAverage.months}
+            locale={{ emptyText: 'Chưa có tháng nào được phê duyệt.' }}
+            columns={[
+              { title: 'Tháng', dataIndex: 'label' },
+              { title: 'Tiêu chí chung', dataIndex: 'generalScore', align: 'right', render: (n: number) => num(n) },
+              { title: 'Kết quả nhiệm vụ', dataIndex: 'resultScore', align: 'right', render: (n: number) => num(n) },
+              { title: 'Tổng điểm', dataIndex: 'totalScore', align: 'right', render: (n: number) => num(n) },
+            ]}
+            summary={() =>
+              detail.yearAverage && detail.yearAverage.months.length > 0 ? (
+                <Table.Summary.Row>
+                  <Table.Summary.Cell index={0}><b>Trung bình ({detail.yearAverage.months.length} tháng)</b></Table.Summary.Cell>
+                  <Table.Summary.Cell index={1} align="right"><b>{num(detail.yearAverage.generalScore)}</b></Table.Summary.Cell>
+                  <Table.Summary.Cell index={2} align="right"><b>{num(detail.yearAverage.resultScore)}</b></Table.Summary.Cell>
+                  <Table.Summary.Cell index={3} align="right"><b>{num(detail.yearAverage.totalScore)}</b></Table.Summary.Cell>
+                </Table.Summary.Row>
+              ) : null
+            }
+          />
+          {detail.yearAverage.missing.length > 0 && (
+            <Typography.Paragraph style={{ marginTop: 12, marginBottom: 0 }}>
+              Tháng chưa có hồ sơ đã phê duyệt: {detail.yearAverage.missing.join(', ')}.
+            </Typography.Paragraph>
+          )}
+          {detail.yearAverage.exempt.length > 0 && (
+            <Typography.Paragraph style={{ marginTop: 12, marginBottom: 0 }}>
+              Tháng nghỉ có căn cứ, không tính vào trung bình: {detail.yearAverage.exempt.join(', ')} (Nghị định 335 Điều 11.2).
+            </Typography.Paragraph>
+          )}
+        </Card>
+      )}
+
+      {detail.yearAverage && (
+        <Card size="small" title="Tổng hợp theo quý và 6 tháng (để theo dõi)" style={{ marginBottom: 16 }}>
+          <Typography.Paragraph type="secondary">
+            Trung bình cộng điểm các tháng đã phê duyệt trong quý (Nghị định 335 Điều 17.3). Điểm quý chính thức là hồ sơ quý chấm trực tiếp, bảng này chỉ để đối chiếu.
+          </Typography.Paragraph>
+          <Table<PeriodAverage>
+            rowKey="key"
+            size="small"
+            pagination={false}
+            dataSource={detail.yearAverage.periods}
+            scroll={{ x: 640 }}
+            columns={[
+              { title: 'Khoảng', dataIndex: 'label' },
+              { title: 'Tháng có điểm', dataIndex: 'approved', align: 'right', render: (n: number, p) => `${n}/${p.span.length}` },
+              { title: 'Thiếu', dataIndex: 'missing', render: (m: number[]) => (m.length ? m.join(', ') : '–') },
+              { title: 'Nghỉ', dataIndex: 'exempt', render: (m: number[]) => (m.length ? m.join(', ') : '–') },
+              { title: 'Tổng điểm TB', dataIndex: 'totalScore', align: 'right', render: (n: number | null) => num(n) },
+              { title: 'Xếp loại tham khảo', dataIndex: 'rating', render: (r: PeriodAverage['rating']) => <RatingTag rating={r} /> },
+              { title: '', dataIndex: 'complete', render: (c: boolean) => (c ? null : <Tag color="orange">Chưa đủ tháng</Tag>) },
+            ]}
+          />
+        </Card>
+      )}
+
+      <Card size="small" title={detail.yearAverage ? 'Chỉ tiêu (tham khảo, không dùng tính điểm năm)' : 'Chỉ tiêu'} style={{ marginBottom: 16 }}>
         <Table<EvaluationTask>
           rowKey="id"
           size="small"
@@ -85,8 +151,8 @@ export default function EvaluationView({ detail, subject, reviewerName, approver
 
       <Card size="small" title={final ? 'Điểm' : 'Điểm (tạm tính)'} style={{ marginBottom: 16 }}>
         <Row gutter={[16, 16]}>
-          <Col xs={12} md={6}><Statistic title="Tự chấm tiêu chí chung" value={num(ev.selfGeneralScore)} /></Col>
-          <Col xs={12} md={6}><Statistic title="Tiêu chí chung (thẩm định)" value={num(ev.generalScore)} /></Col>
+          <Col xs={12} md={6}><Statistic title="Tự chấm tiêu chí chung" value={detail.yearAverage ? '–' : num(ev.selfGeneralScore)} /></Col>
+          <Col xs={12} md={6}><Statistic title={detail.yearAverage ? 'Tiêu chí chung (trung bình)' : 'Tiêu chí chung (thẩm định)'} value={num(detail.yearAverage && !final ? detail.yearAverage.generalScore : ev.generalScore)} /></Col>
           <Col xs={12} md={6}><Statistic title="Kết quả nhiệm vụ (tối đa 70)" value={num(preview.resultScore)} /></Col>
           <Col xs={12} md={6}><Statistic title="Tổng điểm" value={num(preview.totalScore)} styles={{ content: { color: '#b71c1c' } }} /></Col>
         </Row>
@@ -109,7 +175,7 @@ export default function EvaluationView({ detail, subject, reviewerName, approver
           </div>
         )}
         {detail.warnings.map((w) => <Alert key={w} style={{ marginTop: 12 }} type="warning" showIcon message={w} />)}
-        {!preview.complete && <Alert style={{ marginTop: 12 }} type="info" showIcon message="Điểm mới là tạm tính: còn chỉ tiêu có kết quả nhưng chưa đánh giá chất lượng, hoặc cán bộ lãnh đạo chưa được chấm tiêu chí D." />}
+        {!preview.complete && !detail.yearAverage && <Alert style={{ marginTop: 12 }} type="info" showIcon message="Điểm mới là tạm tính: còn chỉ tiêu có kết quả nhưng chưa đánh giá chất lượng, hoặc cán bộ lãnh đạo chưa được chấm tiêu chí D." />}
         {ev.selfComment && <p style={{ marginBottom: 0 }}>Nhận xét của cán bộ: {ev.selfComment}</p>}
         {ev.reviewComment && <p style={{ marginBottom: 0 }}>Nhận xét thẩm định: {ev.reviewComment}</p>}
         {ev.approveComment && <p style={{ marginBottom: 0 }}>Ý kiến phê duyệt: {ev.approveComment}</p>}

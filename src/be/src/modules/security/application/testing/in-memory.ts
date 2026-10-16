@@ -116,6 +116,9 @@ export class InMemoryRoleAssignments extends RoleAssignmentRepository {
   async revoke(id: string, at: Date) {
     this.rows.find((r) => r.id === id)!.revokedAt = at;
   }
+  async findLive(at: Date) {
+    return this.rows.filter((r) => !r.revokedAt && (r.validTo === null || r.validTo > at));
+  }
 }
 
 export class InMemoryAuditLog extends AuditLogRepository {
@@ -129,9 +132,16 @@ export class InMemoryAuditLog extends AuditLogRepository {
   async find(query: AuditQuery) {
     return this.rows
       .filter((r) => (!query.action || r.action === query.action) && (!query.actorId || r.actorAccountId === query.actorId))
+      .filter((r) => (!query.username || r.actorUsername === query.username) && (!query.outcome || r.outcome === query.outcome))
+      .filter((r) => (!query.module || r.module === query.module) && (!query.type || r.type === query.type))
+      .filter((r) => (!query.targetType || r.targetType === query.targetType) && (!query.targetId || r.targetId === query.targetId))
+      .filter((r) => (!query.from || r.occurredAt >= query.from) && (!query.to || r.occurredAt < query.to))
       .filter((r) => !query.beforeId || Number(r.id) < Number(query.beforeId))
       .reverse()
       .slice(0, query.limit ?? 50);
+  }
+  async distinctActions() {
+    return [...new Set(this.rows.map((r) => r.action))].sort();
   }
   async findAfter(afterId: string | null, limit: number) {
     return this.rows.filter((r) => Number(r.id) > Number(afterId ?? 0)).slice(0, limit);

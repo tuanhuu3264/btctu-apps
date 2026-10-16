@@ -3,7 +3,7 @@ import PageTitle from '@/components/page-title';
 import { redirect } from 'next/navigation';
 import { fetchEvaluations, fetchMe, fetchOrgTree, fetchPeriods, UnauthorizedError } from '@/lib/api';
 import type { EvaluationSummary, OrgUnit, Period } from '@/lib/api';
-import { peopleIndex } from '@/lib/labels';
+import { peopleIndex, positionIndex } from '@/lib/labels';
 import EvaluationsView from './evaluations-view';
 import type { Assignee } from './period-actions';
 
@@ -39,17 +39,19 @@ export default async function EvaluationsPage({ searchParams }: { searchParams: 
   const people = peopleIndex(tree);
 
   // Cấp dưới trực tiếp của vị trí mà người đăng nhập đang giữ, chưa có hồ sơ trong kỳ.
-  const withEvaluation = new Set(evaluations.map((ev) => ev.personId));
+  const withEvaluation = new Set(evaluations.map((ev) => `${ev.personId}|${ev.positionId}`));
+  const positionInfo = positionIndex(tree);
   const positions = tree.flatMap((u) => u.positions);
   const myPositionIds = new Set(positions.filter((p) => me.personId && p.holder?.personId === me.personId).map((p) => p.id));
   const assignees: Assignee[] = positions
-    .filter((p) => p.holder && p.reportsToPositionId && myPositionIds.has(p.reportsToPositionId) && !withEvaluation.has(p.holder.personId))
-    .map((p) => ({ personId: p.holder!.personId, label: `${p.holder!.fullName} – ${p.title}` }));
+    .filter((p) => p.holder && p.reportsToPositionId && myPositionIds.has(p.reportsToPositionId) && !withEvaluation.has(`${p.holder.personId}|${p.id}`))
+    .map((p) => ({ personId: p.holder!.personId, positionId: p.id, label: `${p.holder!.fullName} – ${p.title}${p.holder!.kind === 'CONCURRENT' ? ' (kiêm nhiệm)' : ''}` }));
 
   const rows = evaluations.map((ev) => ({
     ...ev,
     fullName: people.get(ev.personId)?.fullName ?? ev.personId,
-    positionTitle: people.get(ev.personId)?.positionTitle ?? '–',
+    positionTitle: positionInfo.get(ev.positionId)?.title ?? people.get(ev.personId)?.positionTitle ?? '–',
+    concurrent: tree.some((u) => u.positions.some((p) => p.id === ev.positionId && p.holder?.personId === ev.personId && p.holder.kind === 'CONCURRENT')),
   }));
 
   return (

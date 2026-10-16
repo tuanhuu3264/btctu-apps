@@ -8,6 +8,8 @@ import { useAction } from '@/lib/use-action';
 
 export interface Assignee {
   personId: string;
+  /** Vị trí lập phiếu: cán bộ kiêm nhiệm có một phiếu riêng cho mỗi vị trí (ADR-047). */
+  positionId: string;
   label: string;
 }
 
@@ -15,7 +17,7 @@ interface GenerateResult {
   period: string;
   created: number;
   refreshed: number;
-  skipped: { personId: string; reason: string }[];
+  skipped: { personId: string; positionId?: string; reason: string }[];
   warnings: string[];
 }
 
@@ -63,9 +65,10 @@ export default function PeriodActions({ periodId, names, periodOpen, canManagePe
   }
 
   async function createEvaluation(v: { person: string }) {
+    const [personId, positionId] = v.person.split('|');
     await run(
       async () => {
-        const created = await apiCall<{ id: string }>('POST', `/evaluation/periods/${periodId}/evaluations`, { personId: v.person });
+        const created = await apiCall<{ id: string }>('POST', `/evaluation/periods/${periodId}/evaluations`, { personId, positionId });
         setAssignModal(false);
         assignForm.resetFields();
         if (created) router.push(`/evaluations/${created.id}`);
@@ -187,7 +190,7 @@ export default function PeriodActions({ periodId, names, periodOpen, canManagePe
             ) : (
               <Form form={assignForm} layout="vertical" onFinish={createEvaluation}>
                 <Form.Item name="person" label="Cán bộ" rules={[{ required: true, message: 'Chọn cán bộ' }]}>
-                  <Select showSearch optionFilterProp="label" placeholder="Chọn cán bộ" options={assignees.map((a) => ({ value: a.personId, label: a.label }))} />
+                  <Select showSearch optionFilterProp="label" placeholder="Chọn cán bộ" options={assignees.map((a) => ({ value: `${a.personId}|${a.positionId}`, label: a.label }))} />
                 </Form.Item>
               </Form>
             )}

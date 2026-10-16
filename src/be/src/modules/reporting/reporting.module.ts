@@ -3,9 +3,9 @@ import { Clock, SystemClock } from '../../common/clock.js';
 import { EvaluationModule } from '../evaluation/index.js';
 import { OrganizationModule } from '../organization/index.js';
 import { SecurityModule } from '../security/index.js';
-import { EvaluationSource, OrgLookup, ReportRenderer } from './application/report.ports.js';
+import { EvaluationSource, OrgLookup, ReportRenderer, UnitEvaluationSource } from './application/report.ports.js';
 import { ReportService } from './application/report.service.js';
-import { EvaluationSourceAdapter, OrgLookupAdapter } from './data-access/adapters.js';
+import { EvaluationSourceAdapter, OrgLookupAdapter, UnitEvaluationSourceAdapter } from './data-access/adapters.js';
 import { FileReportRenderer } from './data-access/file-report-renderer.js';
 import { ReportController } from './presentation/report.controller.js';
 
@@ -17,6 +17,7 @@ import { ReportController } from './presentation/report.controller.js';
     ReportService,
     { provide: Clock, useClass: SystemClock },
     { provide: EvaluationSource, useClass: EvaluationSourceAdapter },
+    { provide: UnitEvaluationSource, useClass: UnitEvaluationSourceAdapter },
     { provide: OrgLookup, useClass: OrgLookupAdapter },
     { provide: ReportRenderer, useClass: FileReportRenderer },
   ],

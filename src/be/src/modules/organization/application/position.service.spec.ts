@@ -128,17 +128,48 @@ describe('PositionService: cờ lãnh đạo, quản lý và xóa vị trí (ADR
     expect(created.isLeader).toBe(true);
   });
 
-  it('xóa vị trí không còn cấp dưới; còn cấp dưới hoặc đang được dùng thì từ chối; ghi nhật ký', async () => {
+  it('ngừng vị trí (xóa mềm): còn cấp dưới hoạt động hoặc còn người giữ thì từ chối; ghi nhật ký; kích hoạt lại được', async () => {
     const { l1, l5 } = await seedChain(org);
-    await expect(org.positions.delete(l1.id)).rejects.toBeInstanceOf(ConflictException); // còn cấp dưới
+    await expect(org.positions.deactivate(l1.id)).rejects.toBeInstanceOf(ConflictException); // còn cấp dưới
 
-    org.repos.positions.inUse.add(l5.id);
-    await expect(org.positions.delete(l5.id)).rejects.toBeInstanceOf(ConflictException); // có lịch sử phân công, hồ sơ...
-    org.repos.positions.inUse.delete(l5.id);
+    const person = await org.persons.create({ fullName: 'Nguyễn Văn A', note: null });
+    const asg = await org.assignments.assign(l5.id, person.id);
+    await expect(org.positions.deactivate(l5.id)).rejects.toBeInstanceOf(ConflictException); // còn người giữ
+    org.clock.advanceDays(1);
+    await org.assignments.end(asg.id);
 
-    await org.positions.delete(l5.id);
-    await expect(org.positions.get(l5.id)).rejects.toBeInstanceOf(NotFoundException);
-    expect(org.audit.at(-1)).toMatchObject({ action: 'position.delete' });
-    await expect(org.positions.delete(l5.id)).rejects.toBeInstanceOf(NotFoundException);
+    const off = await org.positions.deactivate(l5.id, '  Gộp vị trí  ');
+    expect(off).toMatchObject({ status: 'INACTIVE', inactiveReason: 'Gộp vị trí' });
+    expect(off.inactiveAt).toBeInstanceOf(Date);
+    expect(await org.positions.get(l5.id)).toMatchObject({ status: 'INACTIVE' }); // dòng vẫn còn
+    expect(org.audit.at(-1)).toMatchObject({ action: 'position.deactivate' });
+    await expect(org.positions.deactivate(l5.id)).rejects.toBeInstanceOf(ConflictException); // đã ngừng
+
+    expect((await org.positions.listActive()).map((p) => p.id)).not.toContain(l5.id);
+    expect((await org.positions.list()).map((p) => p.id)).toContain(l5.id);
+    await expect(org.assignments.assign(l5.id, person.id)).rejects.toBeInstanceOf(ConflictException); // không phân công vào vị trí đã ngừng
+
+    const on = await org.positions.reactivate(l5.id);
+    expect(on).toMatchObject({ status: 'ACTIVE', inactiveAt: null, inactiveReason: null });
+    expect(org.audit.at(-1)).toMatchObject({ action: 'position.reactivate' });
+  });
+
+  it('không kích hoạt lại vị trí khi đơn vị đã ngừng; không tạo vị trí mới dưới đơn vị hay cấp trên đã ngừng', async () => {
+    const { ban, l1, l5 } = await seedChain(org);
+    await org.positions.deactivate(l5.id);
+    const l4 = (await org.positions.list()).find((p) => p.level === 4)!;
+    await expect(
+      org.positions.create({ unitId: ban.id, code: 'BTCTU-L5-B', title: 'Mới', level: 5, reportsToPositionId: l4.id, duties: null, referenceOkr: null }),
+    ).resolves.toBeDefined();
+    // ngừng toàn bộ vị trí rồi ngừng đơn vị
+    for (const p of [...(await org.positions.list())].sort((a, b) => b.level - a.level)) {
+      if (p.status === 'ACTIVE') await org.positions.deactivate(p.id);
+    }
+    await org.units.deactivate(ban.id);
+    await expect(org.positions.reactivate(l5.id)).rejects.toBeInstanceOf(ConflictException); // đơn vị đã ngừng
+    await expect(
+      org.positions.create({ unitId: ban.id, code: 'BTCTU-L1-B', title: 'Mới', level: 1, reportsToPositionId: null, duties: null, referenceOkr: null }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(l1.id).toBeDefined();
   });
 });

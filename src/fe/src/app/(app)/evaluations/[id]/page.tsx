@@ -1,13 +1,15 @@
 import { Alert, Breadcrumb } from 'antd';
+import ChangeHistoryButton from '@/components/change-history';
 import PageTitle from '@/components/page-title';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { fetchCatalogVersion, fetchEvaluation, fetchMe, fetchOrgTree, ForbiddenError, UnauthorizedError } from '@/lib/api';
-import type { CatalogItem, CatalogTask, EvaluationDetail, OrgUnit } from '@/lib/api';
-import { peopleIndex } from '@/lib/labels';
+import { fetchCatalogVersion, fetchEvaluation, fetchLeave, fetchMe, fetchOrgTree, ForbiddenError, UnauthorizedError } from '@/lib/api';
+import type { CatalogItem, CatalogTask, EvaluationDetail, LeaveMonth, OrgUnit } from '@/lib/api';
+import { peopleIndex, positionIndex } from '@/lib/labels';
 import { inScope, placementOf } from '@/lib/scope';
 import EvaluationActions from './evaluation-actions';
 import EvaluationView from './evaluation-view';
+import LeaveEditor from './leave-editor';
 
 // Dữ liệu lấy từ backend mỗi lần truy cập, không dựng sẵn lúc build.
 export const dynamic = 'force-dynamic';
@@ -48,7 +50,7 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
       const version = await fetchCatalogVersion(detail.period.catalogVersionId);
       // Công việc có phạm vi chỉ hiện cho người thuộc phạm vi đó (ADR-021); không biết vị trí thì để máy chủ kiểm tra.
       const target = tree.length > 0 ? placementOf(tree, detail.evaluation.personId) : null;
-      catalogItems = version.items.filter((i) => i.coefficient !== null && i.coefficient > 0 && (tree.length === 0 || inScope(i, target)));
+      catalogItems = version.items.filter((i) => i.status === 'ACTIVE' && i.coefficient !== null && i.coefficient > 0 && (tree.length === 0 || inScope(i, target)));
       catalogGroups = version.groups;
       catalogTasks = version.tasks;
     } catch {
@@ -56,10 +58,20 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
     }
   }
 
+  // Văn phòng ghi nhận tháng nghỉ cho hồ sơ năm chưa khóa (ADR-039).
+  let leave: LeaveMonth[] | null = null;
+  if (detail.yearAverage && detail.period.status === 'OPEN' && detail.evaluation.status !== 'APPROVED' && me.permissions.includes('evaluation:period-manage')) {
+    leave = await fetchLeave(detail.evaluation.personId, detail.period.year ?? Number(detail.period.label)).catch(() => null);
+  }
+
   const people = peopleIndex(tree);
   const nameOf = (personId: string | null) => (personId ? (people.get(personId)?.fullName ?? personId) : '(chưa xác định)');
   const { evaluation: ev, period, tasks } = detail;
-  const subject = people.get(ev.personId) ?? null;
+  const person = people.get(ev.personId) ?? null;
+  const position = positionIndex(tree).get(ev.positionId);
+  const concurrent = tree.some((u) => u.positions.some((p) => p.id === ev.positionId && p.holder?.personId === ev.personId && p.holder.kind === 'CONCURRENT'));
+  // Phiếu gắn với một vị trí cụ thể: cán bộ kiêm nhiệm có phiếu riêng cho từng vị trí (ADR-047).
+  const subject = person ? { fullName: person.fullName, positionTitle: `${position?.title ?? person.positionTitle}${concurrent ? ' (kiêm nhiệm)' : ''}` } : null;
 
   return (
     <>
@@ -68,6 +80,9 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
         items={[{ title: <Link href={`/evaluations?period=${period.id}`}>Đánh giá kỳ {period.label}</Link> }, { title: subject?.fullName ?? 'Hồ sơ' }]}
       />
       <PageTitle>Hồ sơ đánh giá: {subject?.fullName ?? ev.personId}</PageTitle>
+      <div style={{ marginBottom: 12 }}>
+        <ChangeHistoryButton targetType="evaluation" targetId={ev.id} title={subject?.fullName ?? 'Hồ sơ'} canView={me.permissions.includes('audit:read')} size="middle" />
+      </div>
       <EvaluationView detail={detail} subject={subject} reviewerName={nameOf(detail.reviewerPersonId)} approverName={nameOf(detail.approverPersonId)} />
       <EvaluationActions
         evaluationId={ev.id}
@@ -77,11 +92,17 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
         tasks={tasks}
         selfGeneralScore={ev.selfGeneralScore}
         isLeader={detail.isLeader}
+        isYear={period.type === 'YEAR'}
+        yearEnough={detail.yearAverage?.enough ?? true}
         catalogItems={catalogItems}
         catalogGroups={catalogGroups}
         catalogTasks={catalogTasks}
         suggestedUnitResult={detail.leadershipSuggestion?.unitResult ?? null}
+        suggestedSolidarity={detail.leadershipSuggestion?.solidarity != null ? { value: detail.leadershipSuggestion.solidarity, reason: detail.leadershipSuggestion.solidarityReason ?? '' } : null}
       />
+      {leave && detail.yearAverage && (
+        <LeaveEditor personId={ev.personId} year={period.year ?? Number(period.label)} initial={leave} approvedMonths={detail.yearAverage.months.map((m) => m.month)} />
+      )}
     </>
   );
 }

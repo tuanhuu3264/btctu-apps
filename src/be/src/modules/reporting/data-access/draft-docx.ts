@@ -39,7 +39,7 @@ export async function renderDraftDocx(draft: Draft): Promise<Buffer> {
       children.push(new Paragraph({ children: [] }));
     } else if (/^ {10,}/.test(line)) {
       children.push(new Paragraph({ alignment: AlignmentType.CENTER, indent: { left: 5200 }, children: [run(line.trim(), { bold: true })] }));
-    } else if (line === 'BÁO CÁO' || line === 'QUYẾT ĐỊNH') {
+    } else if (line === 'BÁO CÁO' || line === 'QUYẾT ĐỊNH' || line === 'THÔNG BÁO') {
       titleLines = 2;
       children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 240 }, children: [run(line, { bold: true, size: 32 })] }));
     } else if (titleLines > 0 || line === 'TRƯỞNG BAN TỔ CHỨC TỈNH ỦY' || line === 'QUYẾT ĐỊNH:') {

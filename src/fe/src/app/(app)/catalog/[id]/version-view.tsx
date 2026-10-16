@@ -44,7 +44,18 @@ export default function VersionView({ view, org, canManage, canApprove }: Props)
 
   const columns = [
     { title: 'Mã', dataIndex: 'code', width: 80 },
-    { title: 'Công việc', dataIndex: 'name' },
+    {
+      title: 'Công việc',
+      dataIndex: 'name',
+      render: (name: string, i: CatalogItem) =>
+        i.status === 'INACTIVE' ? (
+          <span style={{ color: '#999' }}>
+            {name} <Tag title={i.inactiveReason ?? undefined}>Ngừng sử dụng</Tag>
+          </span>
+        ) : (
+          name
+        ),
+    },
     { title: 'Sản phẩm', dataIndex: 'productUnits', render: (v: string | null) => v ?? '–' },
     { title: 'Mức', dataIndex: 'complexity', width: 60, align: 'center' as const },
     { title: 'Thời gian', render: (_: unknown, i: CatalogItem) => durationText(i) },
@@ -94,15 +105,26 @@ export default function VersionView({ view, org, canManage, canApprove }: Props)
               <Space>
                 <Button size="small" icon={<EditOutlined />} onClick={() => setEditingItem(i)} aria-label={`Sửa ${i.code}`} />
                 {org.length > 0 && <Button size="small" icon={<ApartmentOutlined />} onClick={() => setScopeItem(i)} aria-label={`Phạm vi ${i.code}`} />}
-                <Popconfirm
-                  title={`Xóa công việc ${i.code}?`}
-                  okText="Xóa"
-                  okButtonProps={{ danger: true }}
-                  cancelText="Hủy"
-                  onConfirm={() => run(async () => void (await apiCall('DELETE', `/catalog/items/${i.id}`)), { success: 'Đã xóa công việc' })}
-                >
-                  <Button size="small" danger icon={<DeleteOutlined />} loading={busy} aria-label={`Xóa ${i.code}`} />
-                </Popconfirm>
+                {i.status === 'INACTIVE' ? (
+                  <Button
+                    size="small"
+                    loading={busy}
+                    onClick={() => run(async () => void (await apiCall('POST', `/catalog/items/${i.id}/reactivate`)), { success: 'Đã kích hoạt lại công việc' })}
+                  >
+                    Kích hoạt lại
+                  </Button>
+                ) : (
+                  <Popconfirm
+                    title={`Ngừng sử dụng công việc ${i.code}?`}
+                    description="Công việc chuyển sang ngừng sử dụng (không xóa dữ liệu); mã được giữ, không giao mới được."
+                    okText="Ngừng sử dụng"
+                    okButtonProps={{ danger: true }}
+                    cancelText="Hủy"
+                    onConfirm={() => run(async () => void (await apiCall('DELETE', `/catalog/items/${i.id}`)), { success: 'Đã ngừng sử dụng công việc' })}
+                  >
+                    <Button size="small" danger icon={<DeleteOutlined />} loading={busy} aria-label={`Ngừng ${i.code}`} />
+                  </Popconfirm>
+                )}
               </Space>
             ),
           },
@@ -124,6 +146,7 @@ export default function VersionView({ view, org, canManage, canApprove }: Props)
           label: (
             <span>
               <strong>{t.name}</strong> <Tag>{t.itemCount} công việc</Tag>
+              {t.status === 'INACTIVE' && <Tag title={t.inactiveReason ?? undefined}>Ngừng sử dụng</Tag>}
               {t.description && <span style={{ color: '#888' }}> {t.description}</span>}
             </span>
           ),
@@ -138,20 +161,31 @@ export default function VersionView({ view, org, canManage, canApprove }: Props)
                   Phạm vi
                 </Button>
               )}
-              <Tooltip title={t.itemCount > 0 ? 'Nhiệm vụ còn công việc nên chưa xóa được' : ''}>
-                <span>
-                  <Popconfirm
-                    title={`Xóa nhiệm vụ "${t.name}"?`}
-                    okText="Xóa"
-                    okButtonProps={{ danger: true }}
-                    cancelText="Hủy"
-                    disabled={t.itemCount > 0}
-                    onConfirm={() => run(async () => void (await apiCall('DELETE', `/catalog/tasks/${t.id}`)), { success: 'Đã xóa nhiệm vụ' })}
-                  >
-                    <Button size="small" danger icon={<DeleteOutlined />} disabled={t.itemCount > 0} loading={busy} aria-label={`Xóa nhiệm vụ ${t.name}`} />
-                  </Popconfirm>
-                </span>
-              </Tooltip>
+              {t.status === 'INACTIVE' ? (
+                <Button
+                  size="small"
+                  loading={busy}
+                  onClick={() => run(async () => void (await apiCall('POST', `/catalog/tasks/${t.id}/reactivate`)), { success: 'Đã kích hoạt lại nhiệm vụ' })}
+                >
+                  Kích hoạt lại
+                </Button>
+              ) : (
+                <Tooltip title={t.itemCount > 0 ? 'Nhiệm vụ còn công việc đang hoạt động nên chưa ngừng được' : ''}>
+                  <span>
+                    <Popconfirm
+                      title={`Ngừng sử dụng nhiệm vụ "${t.name}"?`}
+                      description="Nhiệm vụ chuyển sang ngừng sử dụng (không xóa dữ liệu)."
+                      okText="Ngừng sử dụng"
+                      okButtonProps={{ danger: true }}
+                      cancelText="Hủy"
+                      disabled={t.itemCount > 0}
+                      onConfirm={() => run(async () => void (await apiCall('DELETE', `/catalog/tasks/${t.id}`)), { success: 'Đã ngừng sử dụng nhiệm vụ' })}
+                    >
+                      <Button size="small" danger icon={<DeleteOutlined />} disabled={t.itemCount > 0} loading={busy} aria-label={`Ngừng nhiệm vụ ${t.name}`} />
+                    </Popconfirm>
+                  </span>
+                </Tooltip>
+              )}
             </Space>
           ) : null,
           children: <Table rowKey="id" size="small" pagination={false} dataSource={items.filter((i) => i.taskId === t.id)} columns={columns} scroll={{ x: 1000 }} locale={{ emptyText: 'Nhiệm vụ chưa có công việc nào' }} />,

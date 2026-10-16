@@ -4,7 +4,10 @@ export type ReportKind = (typeof REPORT_KINDS)[number];
 
 /** AUTO: máy tự đưa vào mọi kỳ chứa hạn của việc. MANUAL: người giao chọn loại báo cáo (ADR-016 mục 4). */
 export type PeriodMode = 'AUTO' | 'MANUAL';
-export type AssignmentStatus = 'OPEN' | 'CANCELLED';
+/** PROPOSED: cán bộ đề xuất việc đột xuất, chờ cấp trên duyệt; chưa tính vào hồ sơ kỳ (ADR-046). */
+export type AssignmentStatus = 'PROPOSED' | 'OPEN' | 'CANCELLED';
+/** CATALOG: việc lấy từ danh mục sản phẩm công việc chuẩn. AD_HOC: việc đột xuất, phát sinh ngoài kế hoạch (ADR-046). */
+export type AssignmentSource = 'CATALOG' | 'AD_HOC';
 export type ProgressStatus = 'REPORTED' | 'CONFIRMED' | 'REJECTED';
 
 export const MAX_QUANTITY = 100_000;
@@ -30,10 +33,36 @@ export interface AssignmentModel {
   status: AssignmentStatus;
   /** Người duyệt (cc) do người giao chọn, là một cấp trên của người nhận. null: cấp trên trực tiếp (ADR-024). */
   approverPersonId: string | null;
+  /** Kết quả then chốt (OKR) của người nhận mà việc này góp phần đạt, ví dụ "KR2: Đôn đốc phòng ≥95% nhiệm vụ". Chỉ để theo dõi, không tính điểm (ADR-034). */
+  okrKeyResult: string | null;
   /** Ngày giao. */
   createdAt: Date;
+  source: AssignmentSource;
+  /** Tên việc đột xuất; null với việc từ danh mục. */
+  title: string | null;
+  /** Mẫu việc lặp đã sinh ra việc này, và ngày của lần lặp (cặp này duy nhất); null nếu giao tay. */
+  recurringTemplateId: string | null;
+  recurringKey: string | null;
+  /** Vị trí mà việc được giao cho, để việc chỉ tính vào phiếu của vị trí đó khi người nhận kiêm nhiệm (ADR-047). null: chưa xác định, hiểu là vị trí chính. */
+  positionId: string | null;
 }
-export type NewAssignment = Omit<AssignmentModel, 'id' | 'status' | 'createdAt' | 'approverPersonId'> & { approverPersonId?: string | null };
+export type NewAssignment = Omit<
+  AssignmentModel,
+  'id' | 'status' | 'createdAt' | 'approverPersonId' | 'okrKeyResult' | 'source' | 'title' | 'recurringTemplateId' | 'recurringKey' | 'positionId'
+> & {
+  positionId?: string | null;
+  approverPersonId?: string | null;
+  okrKeyResult?: string | null;
+  source?: AssignmentSource;
+  title?: string | null;
+  recurringTemplateId?: string | null;
+  recurringKey?: string | null;
+  /** Mặc định OPEN; PROPOSED khi cán bộ đề xuất việc đột xuất. */
+  status?: 'OPEN' | 'PROPOSED';
+};
+
+/** Phần được sửa của một việc: nội dung, người duyệt, kết quả then chốt; khi duyệt đề xuất còn mức độ khó (mã ảo), số lượng và hạn. */
+export type AssignmentPatch = Partial<Pick<AssignmentModel, 'note' | 'approverPersonId' | 'okrKeyResult' | 'catalogItemCode' | 'plannedQuantity' | 'dueDate' | 'title' | 'assignerAccountId'>>;
 
 export const MAX_CONTENT_LENGTH = 4000;
 export const MAX_CONSULTANTS = 10;
@@ -88,7 +117,7 @@ export type NewAttachment = Omit<AttachmentModel, 'id' | 'uploadedAt'>;
 /**
  * Trạng thái suy ra của một việc, theo thứ tự ưu tiên: đã hủy, hoàn thành, có báo cáo chờ xác nhận, quá hạn, đang làm.
  */
-export const ASSIGNMENT_STATES = ['IN_PROGRESS', 'PENDING_CONFIRM', 'OVERDUE', 'DONE', 'CANCELLED'] as const;
+export const ASSIGNMENT_STATES = ['PROPOSED', 'IN_PROGRESS', 'PENDING_CONFIRM', 'OVERDUE', 'DONE', 'CANCELLED'] as const;
 export type AssignmentState = (typeof ASSIGNMENT_STATES)[number];
 
 /** Nhiệm vụ do cấp trên đặt cho một cán bộ; chứa các công việc lấy từ danh mục (ADR-018). */
@@ -153,6 +182,7 @@ export function summarize(assignment: Pick<AssignmentModel, 'plannedQuantity' | 
 
 export function stateOf(assignment: Pick<AssignmentModel, 'status' | 'dueDate'>, summary: ProgressSummary, today: string): AssignmentState {
   if (assignment.status === 'CANCELLED') return 'CANCELLED';
+  if (assignment.status === 'PROPOSED') return 'PROPOSED';
   if (summary.done) return 'DONE';
   if (summary.pendingQuantity > 0) return 'PENDING_CONFIRM';
   if (assignment.dueDate < today) return 'OVERDUE';
@@ -177,6 +207,8 @@ export interface AssignedWork extends ProgressSummary {
   /** Tên nhiệm vụ chứa công việc, để ghi nguồn vào dòng hồ sơ. */
   taskTitle: string;
   personId: string;
+  /** Vị trí mà việc được giao cho (ADR-047); null: chưa xác định, hiểu là vị trí chính. */
+  positionId: string | null;
   catalogItemCode: string;
   plannedQuantity: number;
   evidence: string | null;

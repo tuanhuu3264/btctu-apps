@@ -137,7 +137,8 @@ export default function AssignmentTable({ rows, mode, myPersonId, names, canRepo
             render: (_: unknown, v: AssignmentView) => (
               <>
                 {showTask && v.task.title && <div style={{ color: '#888', fontSize: 12 }}>{v.task.title}</div>}
-                <strong>{v.assignment.catalogItemCode}</strong> {v.itemName}
+                {v.assignment.source === 'AD_HOC' ? <Tag color="magenta">Đột xuất · mức {v.adHocLevel}</Tag> : <strong>{v.assignment.catalogItemCode}</strong>} {v.itemName}
+                {v.assignment.recurringTemplateId && <Tag color="cyan">Định kỳ</Tag>}
                 {v.assignment.note && (
                   <div style={{ color: '#888', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.assignment.note}>
                     {v.assignment.note}

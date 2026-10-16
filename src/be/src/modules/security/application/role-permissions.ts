@@ -3,7 +3,7 @@ import type { Permission, Role } from './authorization.model.js';
 /** Mọi cán bộ: xem hồ sơ của mình và tự chấm. */
 const STAFF: readonly Permission[] = ['evaluation:read', 'evaluation:self', 'report:read', 'task:read', 'task:report', 'document:read'];
 /** Cán bộ quản lý: ngoài việc của mình còn giao việc, thẩm định, phê duyệt cho cấp dưới (phạm vi do cây vị trí quyết định). */
-const MANAGER: readonly Permission[] = [...STAFF, 'evaluation:assign', 'evaluation:review', 'evaluation:approve', 'report:export', 'task:assign', 'task:confirm'];
+const MANAGER: readonly Permission[] = [...STAFF, 'evaluation:assign', 'evaluation:review', 'evaluation:approve', 'report:export', 'task:assign', 'task:confirm', 'access-review:confirm'];
 
 /**
  * Ma trận vai trò → quyền. Là giả định của nhóm phát triển, chưa có căn cứ trong tài liệu
@@ -19,16 +19,21 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   CHUYEN_VIEN: ['org:read', 'catalog:read', ...STAFF],
   // Văn phòng giữ dữ liệu cơ cấu tổ chức (đơn vị, cán bộ, vị trí, phân công).
   // Soạn danh mục: cơ quan tham mưu tổ chức cán bộ tổng hợp trình phê duyệt (05-HD/TU); giả định giao cho Văn phòng (G-13).
-  VAN_PHONG: ['org:read', 'org:manage', 'catalog:read', 'catalog:manage', ...STAFF, 'evaluation:read-all', 'evaluation:period-manage', 'report:export', 'report:draft', 'task:read-all', 'document:manage'],
-  QUAN_TRI_HE_THONG: ['org:read', 'catalog:read', 'account:create', 'account:read', 'account:disable', 'role:assign', 'role:read'],
+  VAN_PHONG: ['org:read', 'org:manage', 'catalog:read', 'catalog:manage', ...STAFF, 'evaluation:read-all', 'evaluation:period-manage', 'complaint:manage', 'report:export', 'report:draft', 'task:read-all', 'document:manage'],
+  // Quản trị hệ thống tạo, đóng đợt rà soát quyền và xuất kết quả; không tự xác nhận (ADR-044).
+  QUAN_TRI_HE_THONG: ['org:read', 'catalog:read', 'account:create', 'account:read', 'account:disable', 'role:assign', 'role:read', 'access-review:manage'],
   // Quản trị dữ liệu quyết định ai khai thác dữ liệu nào (QĐ 342 Điều 16.4) nên gắn tài khoản với cán bộ,
   // vì phạm vi dữ liệu suy ra từ vị trí của cán bộ đó. Đồng thời giám sát: đọc tài khoản, vai trò, nhật ký.
   // Quản trị hệ thống không đọc nhật ký để không tự kiểm tra chính mình (GAP G-13).
-  QUAN_TRI_DU_LIEU: ['org:read', 'catalog:read', 'account:read', 'account:link-person', 'role:read', 'audit:read'],
+  // Ban Thường vụ nằm ngoài cơ cấu của Ban nên thẩm định, phê duyệt hồ sơ tập thể của Ban bằng tài khoản có quyền riêng (ADR-030).
+  DAI_DIEN_THUONG_VU: ['org:read', 'catalog:read', 'evaluation:read', 'evaluation:review', 'evaluation:approve', 'evaluation:decide-ban'],
+  // Quản trị dữ liệu giám sát rà soát quyền: xem mọi đợt và xác nhận các mục không có lãnh đạo phụ trách (ADR-044).
+  QUAN_TRI_DU_LIEU: ['org:read', 'catalog:read', 'account:read', 'account:link-person', 'role:read', 'audit:read', 'access-review:oversee'],
 };
 
 /**
  * Vai trò quản trị phải tách biệt: không đi kèm vai trò nào khác, kể cả vai trò quản trị còn lại
  * (QĐ 342 Điều 16 tách chủ quản dữ liệu, quản trị dữ liệu, quản trị hệ thống; ADR-004 mục 2).
+ * Đại diện Ban Thường vụ cũng tách riêng: người của Ban không được vừa tự đánh giá vừa thẩm định hồ sơ của Ban (ADR-030).
  */
-export const EXCLUSIVE_ROLES: readonly Role[] = ['QUAN_TRI_HE_THONG', 'QUAN_TRI_DU_LIEU'];
+export const EXCLUSIVE_ROLES: readonly Role[] = ['QUAN_TRI_HE_THONG', 'QUAN_TRI_DU_LIEU', 'DAI_DIEN_THUONG_VU'];

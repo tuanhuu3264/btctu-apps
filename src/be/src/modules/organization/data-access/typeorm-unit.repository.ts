@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import type { NewUnit, UnitModel, UnitPatch } from '../application/unit.model.js';
+import type { InactiveInfo, NewUnit, UnitModel, UnitPatch } from '../application/unit.model.js';
 import { UnitRepository } from '../application/unit.repository.js';
 import { UnitEntity } from './unit.entity.js';
 
@@ -26,7 +26,7 @@ export class TypeOrmUnitRepository extends UnitRepository {
   }
 
   async create(data: NewUnit): Promise<UnitModel> {
-    return toModel(await this.repo.save(this.repo.create(data)));
+    return toModel(await this.repo.save(this.repo.create({ ...data, status: 'ACTIVE', inactiveAt: null, inactiveReason: null })));
   }
 
   async update(id: string, patch: UnitPatch): Promise<UnitModel> {
@@ -34,17 +34,21 @@ export class TypeOrmUnitRepository extends UnitRepository {
     return toModel(await this.repo.findOneByOrFail({ id }));
   }
 
-  async delete(id: string): Promise<'OK' | 'IN_USE'> {
-    try {
-      await this.repo.delete({ id });
-      return 'OK';
-    } catch (e) {
-      if ((e as { driverError?: { code?: string } }).driverError?.code === '23503') return 'IN_USE'; // vi phạm khóa ngoại
-      throw e;
-    }
+  async setStatus(id: string, info: InactiveInfo): Promise<UnitModel> {
+    await this.repo.update({ id }, info);
+    return toModel(await this.repo.findOneByOrFail({ id }));
   }
 }
 
 function toModel(e: UnitEntity): UnitModel {
-  return { id: e.id, code: e.code, name: e.name, type: e.type, parentId: e.parentId };
+  return {
+    id: e.id,
+    code: e.code,
+    name: e.name,
+    type: e.type,
+    parentId: e.parentId,
+    status: e.status,
+    inactiveAt: e.inactiveAt,
+    inactiveReason: e.inactiveReason,
+  };
 }
