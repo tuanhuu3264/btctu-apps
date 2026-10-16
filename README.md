@@ -8,7 +8,8 @@ Bài kiểm tra năng lực vị trí CNTT. Đề bài: `docs/tai_lieu_tham_khao
 |---|---|
 | `docs/` | Tài liệu gốc; `docs/ocr_md/` là bản md, có Nghị định 335/2025/NĐ-CP là căn cứ công thức KPI (PDF scan là OCR, cần đối chiếu bản gốc) |
 | `knowledge/specs/` | Đặc tả yêu cầu (SPEC-001) |
-| `knowledge/adr/` | Các quyết định kiến trúc (ADR-001 … 010) |
+| `knowledge/adr/` | Các quyết định kiến trúc (ADR-001 … 047) |
+| `knowledge/deliverables/` | Văn bản trả lời đề: `01-bo-tieu-chi-kpi-okr.md` (yêu cầu 1), `03-phuong-an-attt-cap-do-3.md` (yêu cầu 3). Yêu cầu 2 là phần mềm trong `src/`. `Van-ban-tra-loi-yeu-cau-1-va-3.docx` gộp hai văn bản thành một tệp Word để nộp; `Slide-tra-loi-yeu-cau-1-va-3.pptx` là bộ slide 21 trang (có ghi chú diễn giả) |
 | `gap/` | Khoảng trống tài liệu chưa trả lời, giả định đang dùng (GAP.md) |
 | `database/` | PostgreSQL dùng tạm và MinIO lưu tệp đính kèm (docker compose; MinIO cổng 9100, giao diện 9101) |
 | `src/be/` | Backend NestJS (TypeScript, TypeORM) |
@@ -67,4 +68,16 @@ Trạng thái triển khai hiện tại:
 | `reporting` | Dashboard theo kỳ (tổng hợp, theo đơn vị, chi tiết) trong phạm vi người xem, xuất Excel/PDF có nhật ký, dự thảo báo cáo và quyết định điền mẫu (không dùng AI), trang `/reports` (ADR-015). Chưa có: biểu đồ, xếp loại tập thể, áp hạn mức xuất sắc tự động |
 | `integration` | Mô-đun rỗng, chưa triển khai (chưa kết nối Trung ương) |
 
-Chưa làm: phạm vi dữ liệu theo cây tổ chức, rà soát quyền, báo cáo Excel/PDF. MFA bỏ qua theo quyết định (xem `gap/GAP.md` G-12).
+Chức năng bổ sung theo [PLAN-A](knowledge/plans/PLAN-A-bo-sung-chuc-nang.md):
+
+| Mục | Nội dung | ADR |
+|---|---|---|
+| A1 | "Xóa" đơn vị, vị trí, công việc, nhiệm vụ trong danh mục chỉ là đổi trạng thái (ngừng sử dụng, kích hoạt lại, lý do); ghi ở PLAN-A, chưa có ADR riêng | – |
+| A2 | Kiêm nhiệm: vị trí chính và kiêm nhiệm, mỗi vị trí một phiếu và điểm riêng, không gộp điểm (quy ước của dự án, GAP G-33) | 047 |
+| A3 | Việc đột xuất (do cấp trên giao hoặc cán bộ đề xuất) và việc lặp định kỳ (tuần, tháng, quý, năm) | 046 |
+| A4 | Rà soát quyền định kỳ hằng quý: quản trị tạo đợt, lãnh đạo phòng xác nhận | 044 |
+| A5 | Nhật ký có `module`, `type`, lưu trước/sau thay đổi; lịch sử thay đổi theo đối tượng | 045 |
+| A6 | Xuất Excel và PDF danh sách việc, nhật ký, tổ chức; thống kê việc (trạng thái, tỷ lệ chậm, chưa đạt, theo đơn vị); lọc theo loại việc | – |
+| A7 | Tổng quan theo góc nhìn (toàn Ban, phòng, cá nhân), mục "Cần xử lý"; thêm dự thảo thông báo kết quả và ghi chú điểm năm | – |
+
+Chưa làm: kế hoạch KPI/OKR, tự động tính điểm tổng hợp cá nhân và tập thể mở rộng ([PLAN-B](knowledge/plans/PLAN-B-kpi-okr-diem-tong-hop.md)); mẫu biểu cố định theo văn bản cho báo cáo xuất; kiểm tra bằng mắt trên trình duyệt các giao diện mới. MFA bỏ qua theo quyết định (xem `gap/GAP.md` G-12).
