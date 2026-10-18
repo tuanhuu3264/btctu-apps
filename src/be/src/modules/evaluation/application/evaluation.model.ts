@@ -70,6 +70,31 @@ export interface EvaluationModel {
   general: GeneralMarks | null;
   createdBy: string | null;
 }
+/**
+ * Lý do hủy kết quả đã phê duyệt để xếp loại lại (ADR-059). Quy định 143-QĐ/TU của Tỉnh ủy Khánh Hòa, Điều 2.7: phát hiện kết quả không
+ * bảo đảm điều kiện, tiêu chuẩn của mức xếp loại thì người có thẩm quyền hủy kết quả và xếp loại lại.
+ */
+export const REVOCATION_REASONS = {
+  KHONG_DU_DIEU_KIEN: 'Phát hiện không bảo đảm điều kiện, tiêu chuẩn của mức xếp loại',
+  SAI_SO_LIEU: 'Sai số liệu hoặc sai sót trong chấm điểm',
+  KY_LUAT_SAU: 'Kỷ luật hoặc kết luận phát sinh sau, liên quan đến kỳ đã xếp loại',
+  KHAC: 'Lý do khác',
+} as const;
+export type RevocationReason = keyof typeof REVOCATION_REASONS;
+
+/** Một lần hủy kết quả đã phê duyệt: giữ nguyên kết quả cũ để đối chiếu; chỉ ghi thêm. */
+export interface RevocationModel {
+  id: string;
+  evaluationId: string;
+  reasonCode: RevocationReason;
+  reason: string;
+  revokedBy: string;
+  revokedAt: Date;
+  /** Hồ sơ và các chỉ tiêu ngay trước khi hủy. */
+  previous: Record<string, unknown>;
+}
+export type NewRevocation = Pick<RevocationModel, 'evaluationId' | 'reasonCode' | 'reason' | 'revokedBy' | 'previous'>;
+
 export type NewEvaluation = Pick<EvaluationModel, 'periodId' | 'personId' | 'positionId' | 'createdBy'>;
 export type EvaluationPatch = Partial<Omit<EvaluationModel, 'id' | 'periodId' | 'personId' | 'positionId' | 'createdBy'>>;
 

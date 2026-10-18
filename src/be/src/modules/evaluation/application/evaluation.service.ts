@@ -9,11 +9,15 @@ import { checkSupportScores, SUPPORT_POLICY, supportRate, supportResultScore } f
 import type { SupportScores } from './support-criteria.js';
 import { checkMarks, effectiveVersion, GENERAL_GROUP_LABELS, GeneralCriteriaRepository, scoreOf, setOf } from './general-criteria.js';
 import type { GeneralCriteriaSet, GeneralCriteriaVersion, GeneralGroup, GeneralMark, GeneralMarks } from './general-criteria.js';
-import { MAX_QUANTITY, QUALITY_LEVELS } from './evaluation.model.js';
+import { MAX_QUANTITY, QUALITY_LEVELS, REVOCATION_REASONS } from './evaluation.model.js';
+import { excellentQuota, quotaGroupKey, quotaMessage } from './excellent-quota.js';
+import type { ExcellentQuota, QuotaRanked, QuotaRow } from './excellent-quota.js';
 import type {
   EvaluationModel,
   PeriodModel,
   PeriodType,
+  RevocationModel,
+  RevocationReason,
   TaskModel,
   TaskPatch,
 } from './evaluation.model.js';
@@ -81,6 +85,17 @@ export interface EvaluationView {
   forcedItems: { code: string; reasons: string[] }[];
   /** Kỳ năm: điều kiện xếp loại "Không hoàn thành nhiệm vụ" (39-QĐ/TU Điều 11 mục 4); đã thẩm định thì là điều kiện lúc thẩm định. */
   yearConditions: YearCondition[];
+  /** Các lần hủy kết quả đã phê duyệt để xếp loại lại (ADR-059), mới nhất trước. */
+  revocations: RevocationModel[];
+  /** Hạn mức xuất sắc của nhóm khi hồ sơ này ở mức xuất sắc (ADR-060); null nếu hồ sơ không ở mức xuất sắc. Chỉ gợi ý. */
+  excellentQuota: (ExcellentQuota & { mine: QuotaRanked | null }) | null;
+}
+
+/** Hạn mức xuất sắc của một nhóm trong kỳ, cho người phê duyệt và Văn phòng (ADR-060). */
+export interface PeriodQuotaGroup {
+  unitId: string | null;
+  kind: 'LEADER' | 'SUPPORT' | 'STAFF';
+  quota: ExcellentQuota;
 }
 
 /** Kết quả chấm một mục tiêu chí chung gửi lên (ADR-054). */
@@ -921,6 +936,93 @@ export class EvaluationService {
     return this.view(updated, period);
   }
 
+  /**
+   * Hủy kết quả đã phê duyệt để xếp loại lại (ADR-059; tham khảo Quy định 143-QĐ/TU Khánh Hòa Điều 2.7: phát hiện kết quả không bảo
+   * đảm điều kiện, tiêu chuẩn thì người có thẩm quyền hủy kết quả và xếp loại lại). Người có thẩm quyền là người phê duyệt hồ sơ hoặc
+   * cấp trên của người đó. Hồ sơ về bước giao mục tiêu (PLANNED), kết quả cũ lưu nguyên ở bản ghi hủy, cán bộ tự đánh giá lại.
+   */
+  async revoke(actor: Actor, evaluationId: string, input: { reasonCode: RevocationReason; note: string }): Promise<EvaluationView> {
+    const { evaluation, period } = await this.load(evaluationId);
+    this.assertOpen(period);
+    this.assertStatus(evaluation, ['APPROVED']);
+    if (!Object.prototype.hasOwnProperty.call(REVOCATION_REASONS, input.reasonCode)) throw new BadRequestException('Lý do hủy không hợp lệ');
+    const note = input.note?.trim() ?? '';
+    if (note.length < 10) throw new BadRequestException('Cần nêu căn cứ hủy kết quả (ít nhất 10 ký tự)');
+    if (note.length > 2000) throw new BadRequestException('Căn cứ hủy kết quả tối đa 2000 ký tự');
+
+    const authority = await this.authority(evaluation.personId, evaluation.positionId);
+    const competent = authority.holders.length > 1 ? authority.holders.slice(1) : authority.holders;
+    if (!actor.personId) throw new ForbiddenException('Tài khoản chưa gắn với cán bộ nên chưa thao tác đánh giá được');
+    if (competent.length === 0) throw new ConflictException('Chưa có người giữ vị trí cấp trên để thực hiện bước này');
+    if (!competent.includes(actor.personId)) throw new ForbiddenException('Chỉ người phê duyệt hồ sơ hoặc cấp trên của người đó được hủy kết quả đã phê duyệt');
+
+    // Điểm năm là trung bình các tháng đã phê duyệt: tháng đã nằm trong hồ sơ năm đã phê duyệt thì phải hủy hồ sơ năm trước.
+    if (period.type === 'MONTH') {
+      const yearPeriod = (await this.periods.findAll()).find((x) => x.type === 'YEAR' && x.year === period.year);
+      if (yearPeriod && (await this.evaluations.findByPersonInPeriod(yearPeriod.id, evaluation.personId)).some((e) => e.status === 'APPROVED')) {
+        throw new ConflictException(`Hồ sơ năm ${period.year} của cán bộ đã phê duyệt có dùng điểm tháng này: hãy hủy hồ sơ năm trước`);
+      }
+    }
+
+    const tasks = await this.tasks.findByEvaluation(evaluationId);
+    const previous = {
+      period: period.label,
+      status: evaluation.status,
+      totalScore: evaluation.totalScore,
+      resultScore: evaluation.resultScore,
+      generalScore: evaluation.generalScore,
+      rating: evaluation.rating,
+      reviewComment: evaluation.reviewComment,
+      reviewerAccountId: evaluation.reviewerAccountId,
+      reviewedAt: evaluation.reviewedAt,
+      approverAccountId: evaluation.approverAccountId,
+      approvedAt: evaluation.approvedAt,
+      approveComment: evaluation.approveComment,
+      notRatedReason: evaluation.notRatedReason,
+      scoringParams: evaluation.scoringParams,
+      leadership: evaluation.leadership,
+      support: evaluation.support,
+      general: evaluation.general,
+      tasks: tasks.map((t) => ({ catalogItemCode: t.catalogItemCode, plannedQuantity: t.plannedQuantity, completedQuantity: t.completedQuantity, qualityLevel: t.qualityLevel, lateCount: t.lateCount, reworkCount: t.reworkCount })),
+    };
+    const updated = await this.evaluations.revoke(
+      evaluationId,
+      {
+        status: 'PLANNED',
+        generalScore: null,
+        reviewComment: null,
+        reviewerAccountId: null,
+        reviewedAt: null,
+        approverAccountId: null,
+        approvedAt: null,
+        approveComment: null,
+        notRatedReason: null,
+        resultScore: null,
+        totalScore: null,
+        rating: null,
+        scoringParams: null,
+        leadership: null,
+        support: null,
+        general: null,
+        returnReason: `Hủy kết quả đã phê duyệt để xếp loại lại: ${note}`,
+      },
+      { evaluationId, reasonCode: input.reasonCode, reason: note, revokedBy: actor.id, previous },
+    );
+    await this.audit.record({
+      action: 'evaluation.revoke',
+      outcome: 'SUCCESS',
+      targetType: 'evaluation',
+      targetId: evaluationId,
+      details: { period: period.label, reasonCode: input.reasonCode, reason: note, previousTotalScore: previous.totalScore, previousRating: previous.rating },
+    });
+    await this.notifier.notify([evaluation.personId, authority.reviewer], {
+      type: 'EVAL_REVOKED',
+      title: `Kết quả đánh giá kỳ ${period.label} đã bị hủy, cần đánh giá lại`,
+      link: `/evaluations/${evaluationId}`,
+    });
+    return this.view(updated, period);
+  }
+
   /** Trả hồ sơ về bước giao mục tiêu: người thẩm định trả hồ sơ đã tự chấm, người phê duyệt trả hồ sơ đã thẩm định. */
   async returnEvaluation(actor: Actor, evaluationId: string, reason: string): Promise<EvaluationModel> {
     const { evaluation, period } = await this.load(evaluationId);
@@ -1095,6 +1197,13 @@ export class EvaluationService {
       );
     }
 
+    // Hạn mức xuất sắc (ADR-060): chỉ gợi ý khi hồ sơ đã thẩm định ở mức xuất sắc.
+    const quota = decided && preview.rating === 'XUAT_SAC' ? await this.quotaFor(evaluation, period) : null;
+    if (quota) {
+      const note = quotaMessage(quota, quota.mine ?? undefined);
+      if (note && evaluation.status !== 'APPROVED') warnings.push(note);
+    }
+
     return {
       evaluation,
       period,
@@ -1114,7 +1223,41 @@ export class EvaluationService {
       ratingEvents,
       forcedItems: forced.map(([code, events]) => ({ code, reasons: events.map(describeEvent) })),
       yearConditions: yearConditionList,
+      revocations: await this.evaluations.revocationsOf(evaluation.id),
+      excellentQuota: quota,
     };
+  }
+
+  /** Các hồ sơ cùng nhóm "nhiệm vụ tương đồng" trong kỳ: cùng đơn vị, cùng loại vị trí (GAP G-40). */
+  private async quotaPeers(period: PeriodModel): Promise<Map<string, { unitId: string | null; kind: PeriodQuotaGroup['kind']; rows: QuotaRow[]; size: number }>> {
+    const infoCache = new Map<string, PositionInfo | null>();
+    const groups = new Map<string, { unitId: string | null; kind: PeriodQuotaGroup['kind']; rows: QuotaRow[]; size: number }>();
+    for (const e of await this.evaluations.findByPeriod(period.id)) {
+      if (!infoCache.has(e.positionId)) infoCache.set(e.positionId, await this.org.positionInfo(e.positionId));
+      const info = infoCache.get(e.positionId) ?? { positionId: e.positionId, level: 0 };
+      const key = quotaGroupKey(info);
+      const g = groups.get(key) ?? { unitId: info.unitId ?? null, kind: info.isLeader ? 'LEADER' : info.isSupport ? 'SUPPORT' : 'STAFF', rows: [], size: 0 };
+      g.size += 1;
+      if ((e.status === 'REVIEWED' || e.status === 'APPROVED') && e.rating && e.totalScore !== null) {
+        g.rows.push({ evaluationId: e.id, personId: e.personId, score: e.totalScore, rating: e.rating });
+      }
+      groups.set(key, g);
+    }
+    return groups;
+  }
+
+  private async quotaFor(evaluation: EvaluationModel, period: PeriodModel): Promise<(ExcellentQuota & { mine: QuotaRanked | null }) | null> {
+    const info = (await this.org.positionInfo(evaluation.positionId)) ?? { positionId: evaluation.positionId, level: 0 };
+    const group = (await this.quotaPeers(period)).get(quotaGroupKey(info));
+    if (!group) return null;
+    const q = excellentQuota(group.rows, group.size);
+    return { ...q, mine: q.ranking.find((r) => r.evaluationId === evaluation.id) ?? null };
+  }
+
+  /** Hạn mức xuất sắc của mọi nhóm trong kỳ, để người phê duyệt và Văn phòng xem một lượt (ADR-060). */
+  async periodQuota(periodId: string): Promise<PeriodQuotaGroup[]> {
+    const period = await this.requirePeriod(periodId);
+    return [...(await this.quotaPeers(period)).values()].filter((g) => g.rows.length > 0).map((g) => ({ unitId: g.unitId, kind: g.kind, quota: excellentQuota(g.rows, g.size) }));
   }
 
   /** Vị trí hỗ trợ, phục vụ (ADR-053): có cờ trên vị trí việc làm. */

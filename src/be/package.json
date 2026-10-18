@@ -19,6 +19,8 @@
     "backup:verify": "node dist/cli/backup.js verify",
     "backup:list": "node dist/cli/backup.js list",
     "backup:restore": "node dist/cli/backup.js restore",
+    "backup:remote": "node dist/cli/backup.js remote",
+    "backup:pull": "node dist/cli/backup.js pull",
     "import-org": "node dist/cli/import-org.js",
     "import-catalog": "node dist/cli/import-catalog.js",
     "seed-demo": "node dist/cli/seed-demo.js",

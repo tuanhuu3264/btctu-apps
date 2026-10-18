@@ -7,11 +7,12 @@ import { EvaluationService } from '../application/evaluation.service.js';
 import { UnitEvaluationService } from '../application/unit-evaluation.service.js';
 import { RatingEventService } from '../application/rating-event.service.js';
 import type { RatingEventModel } from '../application/rating-events.js';
-import type { EvaluationView, GenerateResult, InsightView, PeriodView } from '../application/evaluation.service.js';
+import type { EvaluationView, GenerateResult, InsightView, PeriodQuotaGroup, PeriodView } from '../application/evaluation.service.js';
 import type { Simulation } from '../application/score-insight.js';
 import {
   AddTaskDto,
   ApproveEvaluationDto,
+  RevokeEvaluationDto,
   CreateEvaluationDto,
   CreatePeriodDto,
   CreateRatingEventDto,
@@ -220,6 +221,21 @@ export class EvaluationController {
   @RequirePermission('evaluation:review')
   returnEvaluation(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ReturnDto): Promise<EvaluationModel> {
     return this.evaluation.returnEvaluation(actor, id, dto.reason);
+  }
+
+  /** Hủy kết quả đã phê duyệt để xếp loại lại (ADR-059); người phê duyệt hoặc cấp trên của người đó. */
+  @Post('evaluations/:id/revoke')
+  @HttpCode(200)
+  @RequirePermission('evaluation:approve')
+  revoke(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RevokeEvaluationDto): Promise<EvaluationView> {
+    return this.evaluation.revoke(actor, id, dto);
+  }
+
+  /** Hạn mức xuất sắc của các nhóm trong kỳ (ADR-060); gợi ý, không tự hạ bậc. */
+  @Get('periods/:id/excellent-quota')
+  @RequirePermission('evaluation:read-all')
+  periodQuota(@Param('id', ParseUUIDPipe) id: string): Promise<PeriodQuotaGroup[]> {
+    return this.evaluation.periodQuota(id);
   }
 
   /** Bước 4: quyết định, phê duyệt. Từ đây hồ sơ khóa. */

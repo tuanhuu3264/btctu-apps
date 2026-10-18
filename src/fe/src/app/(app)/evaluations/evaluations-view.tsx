@@ -21,9 +21,11 @@ interface Props {
   names: Record<string, string>;
   canManagePeriod: boolean;
   canAssign: boolean;
+  unitNames: Record<string, string>;
+  canReadAll: boolean;
 }
 
-export default function EvaluationsView({ periods, selected, rows, assignees, names, canManagePeriod, canAssign }: Props) {
+export default function EvaluationsView({ periods, selected, rows, assignees, names, canManagePeriod, canAssign, unitNames, canReadAll }: Props) {
   const router = useRouter();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<EvaluationSummary['status'] | undefined>(undefined);
@@ -61,6 +63,8 @@ export default function EvaluationsView({ periods, selected, rows, assignees, na
           canManagePeriod={canManagePeriod}
           canAssign={canAssign}
           assignees={assignees}
+          unitNames={unitNames}
+          canReadAll={canReadAll}
         />
       </Space>
 

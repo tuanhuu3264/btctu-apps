@@ -13,6 +13,7 @@ import { RatingEventService } from './application/rating-event.service.js';
 import { TaskingWorkSourceAdapter } from './data-access/work-source.js';
 import {
   EvaluationEntity,
+  EvaluationRevocationEntity,
   EvaluationPeriodEntity,
   EvaluationTaskEntity,
   GeneralCriteriaVersionEntity,
@@ -51,6 +52,7 @@ import { GeneralCriteriaController } from './presentation/general-criteria.contr
     TypeOrmModule.forFeature([
       EvaluationPeriodEntity,
       EvaluationEntity,
+      EvaluationRevocationEntity,
       EvaluationTaskEntity,
       UnitEvaluationEntity,
       UnitAxisEntity,

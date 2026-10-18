@@ -7,9 +7,11 @@ import type {
   EvaluationModel,
   EvaluationPatch,
   NewEvaluation,
+  NewRevocation,
   NewPeriod,
   NewTask,
   PeriodModel,
+  RevocationModel,
   TaskModel,
   TaskPatch,
 } from '../evaluation.model.js';
@@ -124,6 +126,18 @@ export class InMemoryEvaluations extends EvaluationRepository {
     const row = this.rows.find((e) => e.id === id)!;
     Object.assign(row, patch);
     return { ...row };
+  }
+  revocations: RevocationModel[] = [];
+  async revoke(id: string, patch: EvaluationPatch, revocation: NewRevocation) {
+    const row = this.rows.find((e) => e.id === id)!;
+    // Như trigger của CSDL: chỉ hồ sơ đã phê duyệt mới hủy được, và chỉ về PLANNED.
+    if (row.status !== 'APPROVED' || patch.status !== 'PLANNED') throw new Error('Hồ sơ đánh giá đã phê duyệt, không được sửa hoặc xóa');
+    this.revocations.push({ ...revocation, id: nextId('rv'), revokedAt: new Date() });
+    Object.assign(row, patch);
+    return { ...row };
+  }
+  async revocationsOf(evaluationId: string) {
+    return this.revocations.filter((r) => r.evaluationId === evaluationId).map((r) => ({ ...r })).reverse();
   }
 }
 

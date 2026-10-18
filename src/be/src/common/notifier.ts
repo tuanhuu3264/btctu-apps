@@ -12,6 +12,7 @@ export type NotificationType =
   | 'EVAL_REVIEWED'
   | 'EVAL_APPROVED'
   | 'EVAL_RETURNED'
+  | 'EVAL_REVOKED'
   | 'DEADLINE_REMINDER'
   | 'COMPLAINT_RECEIVED'
   | 'DOC_PUBLISHED'

@@ -192,6 +192,17 @@ export class ConditionExceptionDto {
   note: string;
 }
 
+export class RevokeEvaluationDto {
+  /** Lý do hủy kết quả đã phê duyệt (ADR-059). */
+  @IsIn(['KHONG_DU_DIEU_KIEN', 'SAI_SO_LIEU', 'KY_LUAT_SAU', 'KHAC'])
+  reasonCode: 'KHONG_DU_DIEU_KIEN' | 'SAI_SO_LIEU' | 'KY_LUAT_SAU' | 'KHAC';
+
+  /** Căn cứ hủy, ít nhất 10 ký tự. */
+  @IsString()
+  @MaxLength(2000)
+  note: string;
+}
+
 export class ApproveEvaluationDto {
   @IsOptional()
   @IsString()

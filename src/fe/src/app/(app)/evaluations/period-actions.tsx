@@ -1,10 +1,12 @@
 'use client';
 
-import { PlusOutlined, SettingOutlined, SyncOutlined, UserAddOutlined } from '@ant-design/icons';
-import { Alert, Button, Descriptions, Form, InputNumber, List, Modal, Popconfirm, Select } from 'antd';
+import { PlusOutlined, SettingOutlined, SyncOutlined, TrophyOutlined, UserAddOutlined } from '@ant-design/icons';
+import { Alert, Button, Descriptions, Empty, Form, InputNumber, List, Modal, Popconfirm, Select, Table, Tag, Typography } from 'antd';
 import Link from 'next/link';
 import { useState } from 'react';
-import { apiCall } from '@/lib/client';
+import type { PeriodQuotaGroup, QuotaRanked } from '@/lib/api';
+import { apiCall, apiGet } from '@/lib/client';
+import { QUOTA_KIND_LABELS } from '@/lib/labels';
 import { useAction } from '@/lib/use-action';
 
 export interface Assignee {
@@ -31,15 +33,22 @@ interface Props {
   canAssign: boolean;
   /** Cấp dưới trực tiếp chưa có hồ sơ trong kỳ đang chọn. */
   assignees: Assignee[];
+  /** Tên đơn vị theo mã, để gọi tên nhóm hạn mức xuất sắc. */
+  unitNames: Record<string, string>;
+  /** Có quyền xem toàn bộ hồ sơ: xem được hạn mức xuất sắc của mọi nhóm (ADR-060). */
+  canReadAll: boolean;
 }
 
 type PeriodType = 'MONTH' | 'QUARTER' | 'YEAR';
 
-export default function PeriodActions({ periodId, names, periodOpen, canManagePeriod, canAssign, assignees }: Props) {
+export default function PeriodActions({ periodId, names, periodOpen, canManagePeriod, canAssign, assignees, unitNames, canReadAll }: Props) {
   const { run, busy, router } = useAction();
   const [periodModal, setPeriodModal] = useState(false);
   const [assignModal, setAssignModal] = useState(false);
   const [generated, setGenerated] = useState<GenerateResult | null>(null);
+  const [quotaOpen, setQuotaOpen] = useState(false);
+  const [quotaGroups, setQuotaGroups] = useState<PeriodQuotaGroup[] | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [periodForm] = Form.useForm<{ type: PeriodType; year: number; number?: number }>();
   const [assignForm] = Form.useForm<{ person: string }>();
   const type = Form.useWatch('type', periodForm);
@@ -61,6 +70,17 @@ export default function PeriodActions({ periodId, names, periodOpen, canManagePe
     );
   }
 
+  async function openQuota() {
+    setQuotaOpen(true);
+    setQuotaGroups(null);
+    setQuotaError(null);
+    try {
+      setQuotaGroups(await apiGet<PeriodQuotaGroup[]>(`/evaluation/periods/${periodId}/excellent-quota`));
+    } catch (e) {
+      setQuotaError(e instanceof Error ? e.message : 'Không tải được hạn mức xuất sắc');
+    }
+  }
+
   async function generate() {
     await run(async () => setGenerated((await apiCall<GenerateResult>('POST', `/evaluation/periods/${periodId}/generate`)) ?? null));
   }
@@ -80,6 +100,45 @@ export default function PeriodActions({ periodId, names, periodOpen, canManagePe
 
   return (
     <>
+      {canReadAll && periodId && (
+        <>
+          <Button icon={<TrophyOutlined />} onClick={openQuota}>
+            Hạn mức xuất sắc
+          </Button>
+          <Modal title="Hạn mức xuất sắc theo nhóm" open={quotaOpen} onCancel={() => setQuotaOpen(false)} footer={null} width={760} destroyOnHidden>
+            <Typography.Paragraph type="secondary">
+              Nhóm là cùng đơn vị và cùng loại vị trí (giả định, GAP G-40). Chỉ tính hồ sơ đã thẩm định. Hạn mức: không quá 20% số hoàn thành tốt (25% với đơn vị nổi trội); vượt thì lấy từ điểm cao xuống thấp. Hệ thống chỉ gợi ý, người phê duyệt quyết định.
+            </Typography.Paragraph>
+            {quotaError && <Alert type="error" showIcon message={quotaError} />}
+            {quotaGroups?.length === 0 && <Empty description="Chưa có hồ sơ nào được thẩm định trong kỳ" />}
+            {quotaGroups?.map((g) => (
+              <div key={`${g.unitId}|${g.kind}`} style={{ marginBottom: 16 }}>
+                <Typography.Text strong>
+                  {(g.unitId && unitNames[g.unitId]) || 'Đơn vị'} · {QUOTA_KIND_LABELS[g.kind]}
+                </Typography.Text>{' '}
+                <Typography.Text type="secondary">
+                  ({g.quota.groupSize} người; {g.quota.excellent} xuất sắc, {g.quota.good} hoàn thành tốt; tối đa {g.quota.allowed})
+                </Typography.Text>{' '}
+                {g.quota.exceeded ? <Tag color="red">Vượt hạn mức</Tag> : <Tag color="green">Trong hạn mức</Tag>}
+                {g.quota.ranking.length > 0 && (
+                  <Table<QuotaRanked>
+                    rowKey="evaluationId"
+                    size="small"
+                    pagination={false}
+                    dataSource={g.quota.ranking}
+                    columns={[
+                      { title: 'Hạng', dataIndex: 'rank', width: 70 },
+                      { title: 'Cán bộ', render: (_: unknown, r) => names[r.personId] ?? r.personId },
+                      { title: 'Tổng điểm', dataIndex: 'score', align: 'right', width: 110 },
+                      { title: 'Theo hạn mức', width: 190, render: (_: unknown, r) => (r.within ? <Tag color="green">Trong hạn mức</Tag> : r.tie ? <Tag color="orange">Bằng điểm ranh giới</Tag> : <Tag color="red">Ngoài hạn mức</Tag>) },
+                    ]}
+                  />
+                )}
+              </div>
+            ))}
+          </Modal>
+        </>
+      )}
       {canManagePeriod && (
         <>
           <Button icon={<PlusOutlined />} onClick={() => setPeriodModal(true)}>

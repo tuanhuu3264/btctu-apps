@@ -66,6 +66,8 @@ export default async function EvaluationsPage({ searchParams }: { searchParams: 
         names={Object.fromEntries([...people].map(([id, p]) => [id, p.fullName]))}
         canManagePeriod={me.permissions.includes('evaluation:period-manage')}
         canAssign={me.permissions.includes('evaluation:assign')}
+        unitNames={Object.fromEntries(tree.map((u) => [u.id, u.name]))}
+        canReadAll={me.permissions.includes('evaluation:read-all')}
       />
     </>
   );

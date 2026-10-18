@@ -2,9 +2,11 @@ import type {
   EvaluationModel,
   EvaluationPatch,
   NewEvaluation,
+  NewRevocation,
   NewPeriod,
   NewTask,
   PeriodModel,
+  RevocationModel,
   TaskModel,
   TaskPatch,
 } from './evaluation.model.js';
@@ -37,6 +39,12 @@ export abstract class EvaluationRepository {
   abstract findByPeriod(periodId: string): Promise<EvaluationModel[]>;
   abstract create(data: NewEvaluation): Promise<EvaluationModel>;
   abstract update(id: string, patch: EvaluationPatch): Promise<EvaluationModel>;
+  /**
+   * Hủy kết quả đã phê duyệt: ghi bản hủy và đưa hồ sơ về PLANNED trong một giao dịch (trigger chỉ cho phép đúng đường này).
+   */
+  abstract revoke(id: string, patch: EvaluationPatch, revocation: NewRevocation): Promise<EvaluationModel>;
+  /** Các lần hủy của hồ sơ, mới nhất trước. */
+  abstract revocationsOf(evaluationId: string): Promise<RevocationModel[]>;
 }
 
 export abstract class TaskRepository {

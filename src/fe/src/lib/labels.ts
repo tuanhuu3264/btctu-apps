@@ -1,5 +1,16 @@
 import type { EvaluationStatus, OrgUnit, RatingCode } from './api';
 
+/** Lý do hủy kết quả đã phê duyệt (ADR-059). */
+export const REVOCATION_LABELS: Record<'KHONG_DU_DIEU_KIEN' | 'SAI_SO_LIEU' | 'KY_LUAT_SAU' | 'KHAC', string> = {
+  KHONG_DU_DIEU_KIEN: 'Phát hiện không bảo đảm điều kiện, tiêu chuẩn của mức xếp loại',
+  SAI_SO_LIEU: 'Sai số liệu hoặc sai sót trong chấm điểm',
+  KY_LUAT_SAU: 'Kỷ luật hoặc kết luận phát sinh sau, liên quan đến kỳ đã xếp loại',
+  KHAC: 'Lý do khác',
+};
+
+/** Loại nhóm tính hạn mức xuất sắc (ADR-060). */
+export const QUOTA_KIND_LABELS = { LEADER: 'Lãnh đạo, quản lý', STAFF: 'Công chức, chuyên viên', SUPPORT: 'Người lao động hỗ trợ, phục vụ' } as const;
+
 export const RATING_LABELS: Record<RatingCode, string> = {
   XUAT_SAC: 'Hoàn thành xuất sắc nhiệm vụ',
   HOAN_THANH_TOT: 'Hoàn thành tốt nhiệm vụ',

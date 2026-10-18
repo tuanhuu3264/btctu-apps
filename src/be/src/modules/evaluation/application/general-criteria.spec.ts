@@ -74,6 +74,16 @@ describe('checkMarks và scoreOf', () => {
     const ok = checkMarks(all().map((m) => (m.code === 'III.1' ? { ...m, note: 'Có sáng kiến số hóa hồ sơ' } : m)), STAFF_SET, 'Người thẩm định', self);
     expect(scoreOf(ok, STAFF_SET)).toBe(30);
   });
+
+  it('giữ nguyên câu căn cứ của người tự chấm khi đổi kết quả vẫn bị từ chối: phải có căn cứ riêng', () => {
+    const self = checkMarks(all(['II.3']).map((m) => (m.code === 'II.3' ? { ...m, note: 'Nộp trễ một lần trong tháng' } : m)), STAFF_SET, 'Cá nhân');
+    const keepSameNote = all().map((m) => (m.code === 'II.3' ? { ...m, note: 'Nộp trễ một lần trong tháng' } : m));
+    expect(() => checkMarks(keepSameNote, STAFF_SET, 'Người thẩm định', self)).toThrow(/II.3 chấm khác kết quả tự chấm: cần ghi căn cứ riêng/);
+    const own = all().map((m) => (m.code === 'II.3' ? { ...m, note: 'Đã được miễn trừ do mất điện, không coi là thiếu trách nhiệm' } : m));
+    expect(scoreOf(checkMarks(own, STAFF_SET, 'Người thẩm định', self), STAFF_SET)).toBe(30);
+    // Giữ nguyên kết quả tự chấm thì giữ nguyên căn cứ được.
+    expect(() => checkMarks(all(['II.3']).map((m) => (m.code === 'II.3' ? { ...m, note: 'Nộp trễ một lần trong tháng' } : m)), STAFF_SET, 'Người thẩm định', self)).not.toThrow();
+  });
 });
 
 describe('effectiveVersion', () => {

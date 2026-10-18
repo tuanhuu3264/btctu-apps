@@ -6,6 +6,8 @@ Công cụ nằm trong backend (`src/be`), chạy bằng `npm run` sau khi `npm 
 |---|---|---|
 | `BACKUP_DIR` | Nơi lưu chính. Nên là ổ khác ổ chứa CSDL | `./backups` |
 | `BACKUP_OFFSITE_DIR` | Nơi lưu thứ hai (ổ mạng, máy khác, ổ ngoài); trống thì chỉ lưu một nơi | trống |
+| `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` | Đẩy mỗi bản lên **MinIO/S3 riêng** (bucket phải khác `S3_BUCKET` của tệp đính kèm). Tạo bucket tự động nếu chưa có | trống |
+| `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_FORCE_PATH_STYLE` | Máy chủ MinIO đích. Trống thì dùng máy chủ của `S3_ENDPOINT`; **môi trường thật nên dùng máy chủ khác** | theo `S3_*` |
 | `BACKUP_ENCRYPTION_KEY` | 64 ký tự hex; có thì mã hóa AES-256-GCM. Môi trường thật phải đặt, cất tách khỏi bản sao lưu | trống |
 | `BACKUP_KEEP_DAILY`, `_WEEKLY`, `_MONTHLY` | Số ngày, tuần, tháng giữ lại | 7, 4, 12 |
 | `BACKUP_PG_CONTAINER` | Tên container PostgreSQL (chạy bằng docker exec). Trống thì dùng `pg_dump` trên máy | trống |
@@ -21,6 +23,8 @@ npm run backup:list                             # liệt kê các bản, thấy 
 npm run backup:verify                           # thử phục hồi bản mới nhất vào CSDL tạm; mã thoát 2 nếu không đạt
 npm run backup:verify -- 20261018-151047        # thử bản cụ thể
 npm run backup:restore -- latest --into kpi_moi --with-files   # phục hồi vào CSDL trống (và đưa lại tệp đính kèm)
+npm run backup:remote                           # liệt kê các bản trên MinIO đích
+npm run backup:pull -- --with-files             # tải bản mới nhất (và tệp đính kèm) từ MinIO về BACKUP_DIR
 ```
 
 Mốc thời gian của bản sao lưu là giờ UTC (`YYYYMMDD-HHMMSS`). Mọi sự kiện ghi vào `BACKUP_DIR/backup.log`.
@@ -47,7 +51,7 @@ Cả hai lệnh thoát với mã khác 0 khi lỗi; bật cảnh báo "tác vụ
 
 ## Phục hồi sau sự cố
 
-1. Dựng lại PostgreSQL và kho tệp (MinIO) trống; chép bản sao lưu từ nơi thứ hai về `BACKUP_DIR`.
+1. Dựng lại PostgreSQL và kho tệp (MinIO) trống; lấy bản sao lưu từ nơi thứ hai về `BACKUP_DIR`: chép từ `BACKUP_OFFSITE_DIR`, hoặc `npm run backup:pull -- --with-files` nếu lưu ở MinIO đích (đặt `BACKUP_S3_*` trỏ tới MinIO đích).
 2. Tạo CSDL trống: `createdb -U kpi kpi_moi` (hoặc xóa CSDL hỏng rồi tạo lại).
 3. `npm run backup:restore -- latest --into kpi_moi --with-files` (cần `BACKUP_ENCRYPTION_KEY` nếu bản được mã hóa).
 4. Đặt `DB_NAME=kpi_moi` rồi khởi động ứng dụng; migration còn thiếu (nếu có) tự chạy.

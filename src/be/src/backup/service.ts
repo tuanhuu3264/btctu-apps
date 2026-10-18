@@ -6,6 +6,7 @@ import type { BackupConfig } from './config.js';
 import { decryptFile, encryptFile } from './crypto.js';
 import { checkMirror, copyMirror, mirrorFiles, restoreFiles } from './files.js';
 import { invocation, query, runFromFile, runToFile } from './postgres.js';
+import { listRemote, pruneRemote, pullBackup, pushBackup } from './remote.js';
 import { formatStamp, parseStamp, selectKeep } from './retention.js';
 
 /** Các bảng đếm dòng khi sao lưu để đối chiếu khi thử phục hồi: dữ liệu chỉ thêm hoặc hiếm khi xóa. */
@@ -133,6 +134,13 @@ export async function runBackup(config: BackupConfig, log: Log, now = new Date()
       const copied = await copyMirror(filesRoot(config.dir), filesRoot(config.offsiteDir));
       log(`OK chép sang nơi thứ hai ${config.offsiteDir}: ${copied} tệp đính kèm mới`);
       await prune(config.offsiteDir, config, log);
+    }
+    if (config.remote) {
+      const same = new URL(config.remote.endpoint).host === new URL(config.s3.endpoint).host;
+      if (same) log('WARN MinIO đích trùng máy chủ với kho tệp đính kèm: mất máy chủ đó là mất cả hai. Nên dùng máy chủ hoặc ổ đĩa khác.');
+      const pushed = await pushBackup(config.remote, config.dir, stamp);
+      log(`OK đẩy lên MinIO ${config.remote.endpoint}/${config.remote.bucket}: bản ${stamp}, ${pushed.filesUploaded} tệp đính kèm mới`);
+      for (const old of await pruneRemote(config.remote, config.retention)) log(`PRUNE MinIO db/${old} (quá thời hạn giữ)`);
     }
     await prune(config.dir, config, log);
     return manifest;
@@ -267,6 +275,29 @@ export async function restoreBackup(config: BackupConfig, log: Log, options: { s
     }
   } catch (e) {
     log(`FAILED phục hồi ${manifest?.stamp ?? options.stamp ?? ''}: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
+  } finally {
+    await release();
+  }
+}
+
+/** Liệt kê các bản sao lưu đang có trên MinIO. */
+export async function remoteBackups(config: BackupConfig): Promise<{ stamp: string; bytes: number }[]> {
+  if (!config.remote) throw new Error('Chưa cấu hình MinIO cho sao lưu (BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY, BACKUP_S3_SECRET_KEY)');
+  return listRemote(config.remote);
+}
+
+/** Tải một bản từ MinIO về thư mục sao lưu; sau đó dùng `verify` hoặc `restore` như bản thường. */
+export async function pullFromRemote(config: BackupConfig, log: Log, options: { stamp?: string; withFiles: boolean }): Promise<string> {
+  if (!config.remote) throw new Error('Chưa cấu hình MinIO cho sao lưu (BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY, BACKUP_S3_SECRET_KEY)');
+  await mkdir(config.dir, { recursive: true });
+  const release = await lock(config);
+  try {
+    const r = await pullBackup(config.remote, config.dir, options);
+    log(`OK tải bản ${r.stamp} từ MinIO về ${config.dir}${options.withFiles ? ` (${r.files} tệp đính kèm)` : ''}`);
+    return r.stamp;
+  } catch (e) {
+    log(`FAILED tải từ MinIO: ${e instanceof Error ? e.message : String(e)}`);
     throw e;
   } finally {
     await release();

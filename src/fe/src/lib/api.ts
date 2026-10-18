@@ -325,6 +325,47 @@ export interface EvaluationDetail {
   forcedItems: { code: string; reasons: string[] }[];
   /** Kỳ năm: điều kiện xếp loại "Không hoàn thành nhiệm vụ". */
   yearConditions: YearCondition[];
+  /** Các lần hủy kết quả đã phê duyệt để xếp loại lại (ADR-059), mới nhất trước. */
+  revocations: EvaluationRevocation[];
+  /** Hạn mức xuất sắc của nhóm khi hồ sơ ở mức xuất sắc (ADR-060); chỉ gợi ý. */
+  excellentQuota: (ExcellentQuota & { mine: QuotaRanked | null }) | null;
+}
+
+export type RevocationReasonCode = 'KHONG_DU_DIEU_KIEN' | 'SAI_SO_LIEU' | 'KY_LUAT_SAU' | 'KHAC';
+export interface EvaluationRevocation {
+  id: string;
+  evaluationId: string;
+  reasonCode: RevocationReasonCode;
+  reason: string;
+  revokedBy: string;
+  revokedAt: string;
+  /** Kết quả ngay trước khi hủy. */
+  previous: { totalScore?: number | null; rating?: RatingCode | null };
+}
+
+export interface QuotaRanked {
+  evaluationId: string;
+  personId: string;
+  score: number;
+  rating: RatingCode;
+  rank: number;
+  within: boolean;
+  tie: boolean;
+}
+export interface ExcellentQuota {
+  groupSize: number;
+  excellent: number;
+  good: number;
+  allowed: number;
+  allowedExceptional: number;
+  smallGroup: boolean;
+  exceeded: boolean;
+  ranking: QuotaRanked[];
+}
+export interface PeriodQuotaGroup {
+  unitId: string | null;
+  kind: 'LEADER' | 'SUPPORT' | 'STAFF';
+  quota: ExcellentQuota;
 }
 
 /** Sự kiện ảnh hưởng xếp loại (ADR-055). */

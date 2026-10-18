@@ -1373,6 +1373,53 @@ describe('API (e2e)', () => {
       expect(back.body).toMatchObject({ status: 'PLANNED', generalScore: null, general: null, resultScore: null, totalScore: null, rating: null, selfGeneral: { group: 'STAFF' } });
     });
 
+    it('hủy kết quả đã phê duyệt để xếp loại lại (ADR-059): đúng người, đúng đường, bản hủy chỉ ghi thêm', async () => {
+      const month = (await post(vanPhong.cookie, '/api/evaluation/periods', { type: 'MONTH', year: 2031, number: 6 }).expect(201)).body.id as string;
+      const id = (await post(people.head.cookie, `/api/evaluation/periods/${month}/evaluations`, { personId: people.other.personId }).expect(201)).body.id as string;
+      const task = (await post(people.head.cookie, `/api/evaluation/evaluations/${id}/tasks`, { catalogItemCode: 'B.009', plannedQuantity: 4 }).expect(201)).body.id as string;
+      await http().patch(`/api/evaluation/tasks/${task}/result`).set('Cookie', people.other.cookie).send({ completedQuantity: 4 }).expect(200);
+      await post(people.other.cookie, `/api/evaluation/evaluations/${id}/self-submit`, STAFF_20).expect(201);
+      await post(people.head.cookie, `/api/evaluation/evaluations/${id}/review`, { ...STAFF_20, tasks: [{ taskId: task, qualityLevel: 1 }] }).expect(201);
+      const revoke = (cookie: string, body: object = { reasonCode: 'SAI_SO_LIEU', note: 'Phát hiện số liệu nhập thừa, kết quả không còn đúng' }) =>
+        post(cookie, `/api/evaluation/evaluations/${id}/revoke`, body);
+
+      await revoke(people.deputy.cookie).expect(409); // chưa phê duyệt thì chưa có gì để hủy
+      await post(people.deputy.cookie, `/api/evaluation/evaluations/${id}/approve`, { comment: 'Đồng ý' }).expect(201);
+      const [before] = await db.query(`SELECT total_score, rating FROM evaluation WHERE id = $1`, [id]);
+
+      // CSDL không cho tự chuyển về PLANNED khi không có bản hủy trong cùng giao dịch.
+      await expect(db.query(`UPDATE evaluation SET status = 'PLANNED' WHERE id = $1`, [id])).rejects.toThrow(/đã phê duyệt/);
+      for (const who of ['head', 'staff', 'other'] as Who[]) await revoke(people[who].cookie).expect(403);
+      await revoke(unlinked.cookie).expect(403);
+      await revoke(people.deputy.cookie, { reasonCode: 'SAI_SO_LIEU', note: 'ngắn' }).expect(400);
+      await revoke(people.deputy.cookie, { reasonCode: 'LA', note: 'Phát hiện số liệu nhập thừa, kết quả không còn đúng' }).expect(400);
+
+      const revoked = await revoke(people.deputy.cookie).expect(200);
+      expect(revoked.body.evaluation).toMatchObject({ status: 'PLANNED', totalScore: null, rating: null, approverAccountId: null, approvedAt: null, generalScore: null });
+      expect(revoked.body.revocations).toHaveLength(1);
+      expect(revoked.body.revocations[0]).toMatchObject({ reasonCode: 'SAI_SO_LIEU', revokedBy: people.deputy.accountId });
+      expect(Number(revoked.body.revocations[0].previous.totalScore)).toBe(Number(before.total_score));
+
+      // Bản hủy không sửa, không xóa được, kể cả khi bỏ qua API.
+      await expect(db.query(`UPDATE evaluation_revocation SET reason = 'sửa lại thành chuỗi khác dài' WHERE evaluation_id = $1`, [id])).rejects.toThrow(/chỉ được ghi thêm/);
+      await expect(db.query(`DELETE FROM evaluation_revocation WHERE evaluation_id = $1`, [id])).rejects.toThrow(/chỉ được ghi thêm/);
+      await expect(db.query(`INSERT INTO evaluation_revocation (evaluation_id, reason_code, reason, revoked_by, previous) VALUES ($1, 'KHAC', 'ngắn', $2, '{}')`, [id, people.deputy.accountId])).rejects.toThrow(/CHK_evaluation_revocation_reason/);
+
+      // Xếp loại lại bình thường; hồ sơ lại khóa sau khi phê duyệt, bản hủy cũ còn nguyên.
+      await post(people.other.cookie, `/api/evaluation/evaluations/${id}/self-submit`, STAFF_20).expect(201);
+      await post(people.head.cookie, `/api/evaluation/evaluations/${id}/review`, { ...STAFF_20, tasks: [{ taskId: task, qualityLevel: 2 }] }).expect(201);
+      await post(people.deputy.cookie, `/api/evaluation/evaluations/${id}/approve`, { comment: 'Mức mới' }).expect(201);
+      await expect(db.query(`UPDATE evaluation SET status = 'PLANNED' WHERE id = $1`, [id])).rejects.toThrow(/đã phê duyệt/);
+      const view = (await get(people.head.cookie, `/api/evaluation/evaluations/${id}`).expect(200)).body;
+      expect(view.evaluation.status).toBe('APPROVED');
+      expect(view.revocations).toHaveLength(1);
+
+      const rows = await auditRows(`WHERE target_id = $1 AND action LIKE 'evaluation.%' ORDER BY id`, [id]);
+      expect(rows.map((r) => r.action)).toContain('evaluation.revoke');
+      const [log] = await db.query(`SELECT type, module FROM audit_log WHERE target_id = $1 AND action = 'evaluation.revoke'`, [id]);
+      expect(log).toMatchObject({ type: 'STATUS_CHANGE', module: 'evaluation' });
+    });
+
     it('CSDL tự kiểm tra ràng buộc của hồ sơ và chỉ tiêu', async () => {
       const [row] = await db.query(`SELECT id FROM evaluation WHERE status = 'PLANNED' LIMIT 1`);
       await expect(db.query(`UPDATE evaluation SET status = 'KHAC' WHERE id = $1`, [row.id])).rejects.toThrow(/CHK_evaluation_status/);

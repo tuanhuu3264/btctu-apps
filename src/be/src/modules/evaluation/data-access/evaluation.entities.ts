@@ -1,6 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import type { Rating } from '../../scoring/index.js';
-import type { EvaluationStatus, PeriodStatus, PeriodType } from '../application/evaluation.model.js';
+import type { EvaluationStatus, PeriodStatus, PeriodType, RevocationReason } from '../application/evaluation.model.js';
 import type { AutoMetric, AxisKind, AxisScore } from '../application/unit-axes.js';
 import type { ComplaintKind, ComplaintOutcome, ComplaintStatus } from '../application/unit-complaint.js';
 import type { LeaveReason } from '../application/leave.js';
@@ -51,6 +51,31 @@ export class EvaluationPeriodEntity {
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
+}
+
+@Entity('evaluation_revocation')
+export class EvaluationRevocationEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'evaluation_id', type: 'uuid' })
+  evaluationId: string;
+
+  @Column({ name: 'reason_code', type: 'varchar', length: 32 })
+  reasonCode: RevocationReason;
+
+  @Column({ type: 'text' })
+  reason: string;
+
+  @Column({ name: 'revoked_by', type: 'uuid' })
+  revokedBy: string;
+
+  /** Để CSDL đặt bằng now() của giao dịch: trigger của hồ sơ đối chiếu đúng thời điểm này. */
+  @CreateDateColumn({ name: 'revoked_at', type: 'timestamptz' })
+  revokedAt: Date;
+
+  @Column({ type: 'jsonb' })
+  previous: Record<string, unknown>;
 }
 
 @Entity('evaluation')

@@ -126,13 +126,15 @@ export function checkMarks(input: readonly { code: string; ok: boolean; note?: s
   }
   const missing = set.items.filter((i) => !byCode.has(i.code)).map((i) => i.code);
   if (missing.length > 0) throw new BadRequestException(`Chưa chấm các mục: ${missing.join(', ')}`);
-  const self = new Map((compareWith ?? []).map((m) => [m.code, m.ok]));
+  const self = new Map((compareWith ?? []).map((m) => [m.code, m]));
   return set.items.map((item) => {
     const m = byCode.get(item.code)!;
     const note = m.note?.trim() || null;
     if (note && note.length > MAX_NOTE) throw new BadRequestException(`Căn cứ của mục ${item.code} dài quá ${MAX_NOTE} ký tự`);
     if (!m.ok && !note) throw new BadRequestException(`Mục ${item.code} Không đảm bảo: cần ghi căn cứ (hạn chế, vi phạm cụ thể)`);
-    if (self.has(item.code) && self.get(item.code) !== m.ok && !note) throw new BadRequestException(`Mục ${item.code} chấm khác kết quả tự chấm: cần ghi căn cứ`);
+    const own = self.get(item.code);
+    // Chấm khác tự chấm thì phải có căn cứ của chính người chấm, không giữ nguyên câu căn cứ của người tự chấm.
+    if (own && own.ok !== m.ok && (!note || note === own.note)) throw new BadRequestException(`Mục ${item.code} chấm khác kết quả tự chấm: cần ghi căn cứ riêng của người chấm`);
     return { code: item.code, ok: m.ok, note };
   });
 }

@@ -8,6 +8,8 @@ import type { CatalogItem, CatalogTask, EvaluationDetail, LeaveMonth, OrgUnit, R
 import { peopleIndex, positionIndex } from '@/lib/labels';
 import { inScope, placementOf } from '@/lib/scope';
 import EvaluationActions from './evaluation-actions';
+import ExcellentQuotaCard from './excellent-quota-card';
+import RevocationPanel from './revocation-panel';
 import EvaluationView from './evaluation-view';
 import LeaveEditor from './leave-editor';
 import RatingEvents from './rating-events';
@@ -113,6 +115,12 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
         catalogTasks={catalogTasks}
         suggestedUnitResult={detail.leadershipSuggestion?.unitResult ?? null}
         suggestedSolidarity={detail.leadershipSuggestion?.solidarity != null ? { value: detail.leadershipSuggestion.solidarity, reason: detail.leadershipSuggestion.solidarityReason ?? '' } : null}
+      />
+      {detail.excellentQuota && <ExcellentQuotaCard quota={detail.excellentQuota} names={Object.fromEntries([...people].map(([id, p]) => [id, p.fullName]))} />}
+      <RevocationPanel
+        evaluationId={ev.id}
+        canRevoke={ev.status === 'APPROVED' && period.status === 'OPEN' && me.permissions.includes('evaluation:approve') && me.personId !== ev.personId}
+        revocations={detail.revocations}
       />
       <RatingEvents personId={ev.personId} year={eventYear} events={ratingEvents} canEdit={me.permissions.includes('evaluation:period-manage') && period.status === 'OPEN'} />
       {leave && detail.yearAverage && (

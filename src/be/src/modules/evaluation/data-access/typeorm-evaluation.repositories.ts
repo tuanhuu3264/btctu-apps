@@ -8,8 +8,10 @@ import type {
   EvaluationPatch,
   NewEvaluation,
   NewPeriod,
+  NewRevocation,
   NewTask,
   PeriodModel,
+  RevocationModel,
   TaskModel,
   TaskPatch,
 } from '../application/evaluation.model.js';
@@ -26,6 +28,7 @@ import type { GeneralCriteriaVersion, NewGeneralCriteriaVersion } from '../appli
 import {
   EvaluationEntity,
   EvaluationPeriodEntity,
+  EvaluationRevocationEntity,
   EvaluationTaskEntity,
   GeneralCriteriaVersionEntity,
   LeaveRecordEntity,
@@ -101,6 +104,22 @@ export class TypeOrmEvaluationRepository extends EvaluationRepository {
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     await this.repo.update({ id }, clean);
     return toEvaluation(await this.repo.findOneByOrFail({ id }));
+  }
+
+  async revoke(id: string, patch: EvaluationPatch, revocation: NewRevocation): Promise<EvaluationModel> {
+    // Bản hủy và việc đưa hồ sơ về PLANNED phải nằm trong một giao dịch: trigger đối chiếu revoked_at với now() của giao dịch.
+    const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    return this.repo.manager.transaction(async (m) => {
+      const repo = m.getRepository(EvaluationRevocationEntity);
+      await repo.save(repo.create({ ...revocation }));
+      await m.getRepository(EvaluationEntity).update({ id }, clean);
+      return toEvaluation(await m.getRepository(EvaluationEntity).findOneByOrFail({ id }));
+    });
+  }
+
+  async revocationsOf(evaluationId: string): Promise<RevocationModel[]> {
+    const rows = await this.repo.manager.getRepository(EvaluationRevocationEntity).find({ where: { evaluationId }, order: { revokedAt: 'DESC' } });
+    return rows.map((r) => ({ id: r.id, evaluationId: r.evaluationId, reasonCode: r.reasonCode, reason: r.reason, revokedBy: r.revokedBy, revokedAt: r.revokedAt, previous: r.previous }));
   }
 }
 
