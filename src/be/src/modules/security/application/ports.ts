@@ -6,6 +6,7 @@ import type {
   Credentials,
   CurrentAccount,
   LoginState,
+  MfaModel,
   NewAccount,
   NewSession,
   SessionModel,
@@ -27,6 +28,8 @@ export abstract class SessionRepository {
   abstract create(data: NewSession): Promise<SessionModel>;
   abstract findByTokenHash(tokenHash: string): Promise<SessionModel | null>;
   abstract revoke(tokenHash: string, at: Date): Promise<void>;
+  /** Ghi nhận thao tác của người dùng vào phiên chưa thu hồi. */
+  abstract touch(tokenHash: string, at: Date): Promise<void>;
   abstract revokeAllForAccount(accountId: string, at: Date): Promise<void>;
 }
 
@@ -66,4 +69,14 @@ export abstract class PasswordHasher {
 export abstract class Authenticator {
   /** Ném UnauthorizedException khi thất bại. */
   abstract authenticate(credentials: Credentials): Promise<CurrentAccount>;
+}
+
+export abstract class MfaRepository {
+  abstract find(accountId: string): Promise<MfaModel | null>;
+  /** Lưu khóa đang đăng ký (thay khóa đăng ký dở trước đó, chưa bật). */
+  abstract savePending(accountId: string, secretEnc: string): Promise<void>;
+  abstract enable(accountId: string, data: { recoveryHashes: string[]; lastStep: number; at: Date }): Promise<void>;
+  abstract setLastStep(accountId: string, step: number): Promise<void>;
+  abstract setRecoveryHashes(accountId: string, hashes: string[]): Promise<void>;
+  abstract remove(accountId: string): Promise<void>;
 }

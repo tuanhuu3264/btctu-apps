@@ -112,6 +112,7 @@ export class PositionController {
       title: dto.title,
       level: dto.level,
       ...(dto.isLeader === undefined ? {} : { isLeader: dto.isLeader }),
+      ...(dto.isSupport === undefined ? {} : { isSupport: dto.isSupport }),
       reportsToPositionId: dto.reportsToPositionId ?? null,
       duties: dto.duties ?? null,
       referenceOkr: dto.referenceOkr ?? null,

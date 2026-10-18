@@ -8,18 +8,22 @@ import {
   DashboardOutlined,
   AppstoreOutlined,
   BarChartOutlined,
+  CalendarOutlined,
   CarryOutOutlined,
   FileDoneOutlined,
   FolderOpenOutlined,
   IdcardOutlined,
   LogoutOutlined,
+  ProjectOutlined,
   StarFilled,
   TeamOutlined,
   UsergroupAddOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { Avatar, Button, Layout, Menu, Space, Tag, Typography } from 'antd';
+import IdleGuard from '@/components/idle-guard';
 import NotificationBell from '@/components/notification-bell';
+import SecurityButton from '@/components/security-modal';
 import type { MenuProps } from 'antd';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -33,7 +37,7 @@ const { Header, Sider, Content } = Layout;
 type Item = Required<MenuProps>['items'][number];
 
 /** Mục menu hiện theo quyền của người đăng nhập. Máy chủ vẫn kiểm tra lại mọi thao tác. */
-function menuItems(permissions: string[]): Item[] {
+function menuItems(permissions: string[], linked: boolean): Item[] {
   const can = (p: string) => permissions.includes(p);
   const items: (Item | false)[] = [
     { key: '/', icon: <DashboardOutlined />, label: <Link href="/">Tổng quan</Link> },
@@ -41,6 +45,8 @@ function menuItems(permissions: string[]): Item[] {
     can('org:manage') && { key: '/organization', icon: <IdcardOutlined />, label: <Link href="/organization">Quản lý cán bộ</Link> },
     can('catalog:read') && { key: '/catalog', icon: <AppstoreOutlined />, label: <Link href="/catalog">Danh mục nhiệm vụ</Link> },
     can('task:read') && { key: '/tasks', icon: <CarryOutOutlined />, label: <Link href="/tasks">Việc được giao</Link> },
+    linked && { key: '/projects', icon: <ProjectOutlined />, label: <Link href="/projects">Đề án, dự án</Link> },
+    linked && { key: '/meetings', icon: <CalendarOutlined />, label: <Link href="/meetings">Lịch họp</Link> },
     can('task:read') && { key: '/okr', icon: <AimOutlined />, label: <Link href="/okr">OKR theo dõi</Link> },
     (can('document:read') || can('task:read')) && { key: '/documents', icon: <FolderOpenOutlined />, label: <Link href="/documents">Quản lý tài liệu</Link> },
     can('evaluation:read') && { key: '/evaluations', icon: <FileDoneOutlined />, label: <Link href="/evaluations">Đánh giá theo kỳ</Link> },
@@ -56,7 +62,7 @@ function menuItems(permissions: string[]): Item[] {
 export default function AppShell({ me, children }: { me: Me; children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const selected = ['/org-chart', '/organization', '/catalog', '/tasks', '/okr', '/documents', '/evaluations', '/unit-evaluations', '/reports', '/audit-logs', '/access-reviews', '/accounts'].find((p) => pathname.startsWith(p)) ?? '/';
+  const selected = ['/org-chart', '/organization', '/catalog', '/tasks', '/projects', '/meetings', '/okr', '/documents', '/evaluations', '/unit-evaluations', '/reports', '/audit-logs', '/access-reviews', '/accounts'].find((p) => pathname.startsWith(p)) ?? '/';
 
   async function logout() {
     await apiCall('POST', '/auth/logout').catch(() => null);
@@ -66,6 +72,7 @@ export default function AppShell({ me, children }: { me: Me; children: ReactNode
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      <IdleGuard />
       <Sider breakpoint="lg" collapsedWidth={0} width={248} theme="light" style={{ borderRight: '1px solid #f3e4e6' }}>
         <div className="brand">
           <div className="brand-mark">
@@ -76,7 +83,7 @@ export default function AppShell({ me, children }: { me: Me; children: ReactNode
             <div className="brand-sub">Ban Tổ chức Tỉnh ủy Đắk Lắk</div>
           </div>
         </div>
-        <Menu mode="inline" selectedKeys={[selected]} items={menuItems(me.permissions)} style={{ borderInlineEnd: 0 }} />
+        <Menu mode="inline" selectedKeys={[selected]} items={menuItems(me.permissions, !!me.personId)} style={{ borderInlineEnd: 0 }} />
       </Sider>
       <Layout>
         <Header className="app-header" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', padding: '0 24px' }}>
@@ -85,6 +92,7 @@ export default function AppShell({ me, children }: { me: Me; children: ReactNode
             <Avatar style={{ background: '#c8102e' }} icon={<UserOutlined />} />
             <Typography.Text strong>{me.username}</Typography.Text>
             {me.roles.length > 0 ? me.roles.map((r) => <Tag key={r} color="red">{ROLE_LABELS[r] ?? r}</Tag>) : <Tag>chưa có vai trò</Tag>}
+            <SecurityButton />
             <Button icon={<LogoutOutlined />} onClick={logout}>
               Đăng xuất
             </Button>

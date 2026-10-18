@@ -19,8 +19,24 @@ import { readOrgRowsFromExcel } from './../src/modules/organization/data-access/
 import { AccountService, RoleService } from './../src/modules/security/index.js';
 import { computeAuditHash } from './../src/modules/security/application/audit-hash.js';
 import type { Role } from './../src/modules/security/index.js';
+import { SecurityConfig } from './../src/modules/security/application/security.config.js';
+import { codeAtStep, stepAt } from './../src/modules/security/application/totp.js';
+import { LEADER_SET, STAFF_SET } from './../src/modules/evaluation/application/general-criteria.js';
 
 const E2E_DB = 'kpi_e2e';
+
+/**
+ * Tiêu chí chung chấm theo mục (ADR-054): mọi mục Đảm bảo, trừ các mục nêu ở `failed` (Không đảm bảo kèm căn cứ). Migration gieo
+ * bảng áp dụng từ tháng hiện tại nên các kỳ thử (2030 trở đi) đều chấm theo mục.
+ */
+function general(group: 'LEADER' | 'STAFF', failed: string[] = []) {
+  const set = group === 'LEADER' ? LEADER_SET : STAFF_SET;
+  return { general: set.items.map((i) => (failed.includes(i.code) ? { code: i.code, ok: false, note: `Hạn chế ở mục ${i.code}` } : { code: i.code, ok: true })) };
+}
+/** Công chức: 25 điểm (I.2 Không đảm bảo), 20 điểm (I.1, I.2), 27,5 điểm (III.1). */
+const STAFF_25 = general('STAFF', ['I.2']);
+const STAFF_20 = general('STAFF', ['I.1', 'I.2']);
+const STAFF_275 = general('STAFF', ['III.1']);
 
 /**
  * Nhật ký không xóa được (có chủ đích), nên e2e chạy trên CSDL riêng, tạo lại từ đầu mỗi lần chạy.
@@ -242,6 +258,113 @@ describe('API (e2e)', () => {
       await http().post(`/api/accounts/${victim.id}/disable`).set('Cookie', adminCookie).expect(204);
       await http().get('/api/auth/me').set('Cookie', victimCookie).expect(401);
       await http().post(`/api/accounts/${admin.id}/disable`).set('Cookie', adminCookie).expect(403);
+    });
+  });
+
+  describe('xác thực nhiều lớp TOTP (ADR-048)', () => {
+    // Chế độ lấy từ .env của máy chạy (có thể là off), nên đặt rõ chế độ cần thử rồi trả lại.
+    let savedMode: SecurityConfig['mfaMode'];
+    beforeAll(() => {
+      savedMode = app.get(SecurityConfig).mfaMode;
+      app.get(SecurityConfig).mfaMode = 'optional';
+    });
+    afterAll(() => {
+      app.get(SecurityConfig).mfaMode = savedMode;
+    });
+
+    const codeFor = (secret: string, offsetSteps = 0) => codeAtStep(secret, stepAt(Date.now()) + offsetSteps);
+
+    /** Đăng nhập, đăng ký thiết bị qua giao diện tự phục vụ; trả về khóa, mã khôi phục và tên đăng nhập. */
+    async function enrolled(role?: Role) {
+      const { username, cookie, account } = await createUser(role);
+      const start = await http().post('/api/auth/mfa/setup/start').set('Cookie', cookie).expect(200);
+      expect(start.body.qrDataUrl).toMatch(/^data:image\/png;base64,/);
+      const secret = start.body.secret as string;
+      const done = await http().post('/api/auth/mfa/setup/confirm').set('Cookie', cookie).send({ code: codeFor(secret) }).expect(200);
+      return { username, account, secret, recoveryCodes: done.body.recoveryCodes as string[] };
+    }
+
+    it('đăng ký, rồi đăng nhập hai bước: mật khẩu trả thẻ thử thách (không cookie), mã đúng mới có phiên', async () => {
+      const { username, secret } = await enrolled();
+      const step1 = await http().post('/api/auth/login').send({ username, password }).expect(200);
+      expect(step1.body.mfa).toBe('VERIFY');
+      expect(step1.headers['set-cookie']).toBeUndefined();
+      expect(step1.body.passwordHash).toBeUndefined();
+
+      const challenge = step1.body.challenge as string;
+      await http().post('/api/auth/mfa/verify').send({ challenge, code: '000000' }).expect(401);
+      const ok = await http().post('/api/auth/mfa/verify').send({ challenge, code: codeFor(secret, 1) }).expect(200);
+      await http().get('/api/auth/me').set('Cookie', cookieOf(ok)).expect(200);
+      // Mã đã dùng không dùng lại.
+      await http().post('/api/auth/mfa/verify').send({ challenge, code: codeFor(secret, 1) }).expect(401);
+      // Thẻ thử thách giả bị từ chối.
+      await http().post('/api/auth/mfa/verify').send({ challenge: challenge.slice(0, -3) + 'AAA', code: codeFor(secret, 1) }).expect(401);
+    });
+
+    it('khóa TOTP và mã khôi phục trong cơ sở dữ liệu không ở dạng thô', async () => {
+      const { account, secret, recoveryCodes } = await enrolled();
+      const [row] = await db.query(`SELECT * FROM account_mfa WHERE account_id = $1`, [account.id]);
+      expect(row.secret_enc).not.toContain(secret);
+      expect(row.secret_enc).toMatch(/^v1\./);
+      expect(JSON.stringify(row.recovery_hashes)).not.toContain(recoveryCodes[0].replace('-', ''));
+      expect(row.recovery_hashes).toHaveLength(10);
+    });
+
+    it('mã khôi phục thay mã TOTP đúng một lần', async () => {
+      const { username, recoveryCodes } = await enrolled();
+      const login = () => http().post('/api/auth/login').send({ username, password }).expect(200);
+      const first = await login();
+      await http().post('/api/auth/mfa/verify').send({ challenge: first.body.challenge, code: recoveryCodes[0] }).expect(200);
+      const second = await login();
+      await http().post('/api/auth/mfa/verify').send({ challenge: second.body.challenge, code: recoveryCodes[0] }).expect(401);
+    });
+
+    it('sai mã nhiều lần thì khóa tạm tài khoản, đăng nhập lại cũng không xóa bộ đếm', async () => {
+      const { username, secret } = await enrolled();
+      const max = app.get(SecurityConfig).maxFailedAttempts;
+      for (let i = 0; i < max; i++) {
+        const step1 = await http().post('/api/auth/login').send({ username, password });
+        if (step1.status !== 200) break;
+        await http().post('/api/auth/mfa/verify').send({ challenge: step1.body.challenge, code: '000000' }).expect(401);
+      }
+      await http().post('/api/auth/login').send({ username, password }).expect(401);
+      const locked = await auditRows(`WHERE action = 'auth.account.locked' AND details->>'username' = $1`, [username]);
+      expect(locked.length).toBeGreaterThan(0);
+      expect(secret).toBeTruthy();
+    });
+
+    it('chế độ required: vai trò quản trị bị buộc đăng ký; quản trị đặt lại MFA cho người mất thiết bị', async () => {
+      const cfg = app.get(SecurityConfig);
+      const { cookie: adminCookie } = await createUser('QUAN_TRI_HE_THONG'); // đăng nhập trước khi bật chế độ bắt buộc
+      const { username: dataAdmin, account: dataAdminAccount } = await createUser('QUAN_TRI_DU_LIEU');
+      cfg.mfaMode = 'required';
+      try {
+        const step1 = await http().post('/api/auth/login').send({ username: dataAdmin, password }).expect(200);
+        expect(step1.body.mfa).toBe('ENROLL');
+        expect(step1.headers['set-cookie']).toBeUndefined();
+        const start = await http().post('/api/auth/mfa/enroll/start').send({ challenge: step1.body.challenge }).expect(200);
+        // Thẻ ENROLL không dùng được cho bước VERIFY.
+        await http().post('/api/auth/mfa/verify').send({ challenge: step1.body.challenge, code: codeFor(start.body.secret) }).expect(401);
+        const done = await http().post('/api/auth/mfa/enroll/confirm').send({ challenge: step1.body.challenge, code: codeFor(start.body.secret) }).expect(200);
+        expect(done.body.recoveryCodes).toHaveLength(10);
+        const cookie = cookieOf(done);
+        await http().get('/api/auth/me').set('Cookie', cookie).expect(200);
+        // Vai trò bắt buộc không tự tắt được.
+        await http().post('/api/auth/mfa/disable').set('Cookie', cookie).send({ password, code: codeFor(start.body.secret, 1) }).expect(403);
+
+        // Người dùng thường không đặt lại được; quản trị hệ thống thì được.
+        const { cookie: userCookie } = await createUser('CHUYEN_VIEN');
+        await http().post(`/api/accounts/${dataAdminAccount.id}/mfa/reset`).set('Cookie', userCookie).expect(403);
+        await http().post(`/api/accounts/${dataAdminAccount.id}/mfa/reset`).set('Cookie', adminCookie).expect(204);
+        await http().get('/api/auth/me').set('Cookie', cookie).expect(401);
+        const again = await http().post('/api/auth/login').send({ username: dataAdmin, password }).expect(200);
+        expect(again.body.mfa).toBe('ENROLL');
+
+        const log = await auditRows(`WHERE action IN ('auth.mfa.enroll','account.mfa.reset') AND target_id = $1 ORDER BY id`, [dataAdminAccount.id]);
+        expect(log.map((r) => r.action)).toEqual(['auth.mfa.enroll', 'account.mfa.reset']);
+      } finally {
+        cfg.mfaMode = 'optional';
+      }
     });
   });
 
@@ -1110,6 +1233,40 @@ describe('API (e2e)', () => {
         expect((await get(vanPhong.cookie, `/api/evaluation/periods/${periodId}/evaluations`).expect(200)).body.length).toBeGreaterThanOrEqual(1);
       });
 
+      it('giải thích điểm và mô phỏng: cùng phạm vi xem với hồ sơ, không ghi gì vào hồ sơ', async () => {
+        const base = `/api/evaluation/evaluations/${evaluationId}`;
+        await get(people.other.cookie, `${base}/insight`).expect(403);
+        await get(unlinked.cookie, `${base}/insight`).expect(403);
+        await post(people.other.cookie, `${base}/simulate`, {}).expect(403);
+        await get(sysAdmin.cookie, `${base}/insight`).expect(403);
+
+        const insight = (await get(people.staff.cookie, `${base}/insight`).expect(200)).body;
+        expect(insight).toMatchObject({ supported: true, frozen: false, isLeader: false });
+        expect(insight.explanation.lines.map((l: any) => l.code).sort()).toEqual(['A.003', 'B.009']);
+        expect(insight.explanation.components).toHaveLength(3);
+        expect(insight.explanation.resultScore).toBe(0);
+        expect(insight.suggestions.opportunities.length).toBeGreaterThan(0);
+        expect(insight.tasks).toHaveLength(2);
+
+        // Giả định hoàn thành hết: điểm kết quả đạt 70; hồ sơ thật không đổi.
+        const overrides = insight.tasks.map((t: any) => ({ taskId: t.taskId, completedQuantity: t.planned, qualityLevel: 1 }));
+        const sim = (await post(people.head.cookie, `${base}/simulate`, { tasks: overrides, generalScore: 25 }).expect(200)).body;
+        expect(sim.base.resultScore).toBe(0);
+        expect(sim.result.resultScore).toBe(70);
+        expect(sim.deltaResult).toBe(70);
+        expect(sim.result.totalScore).toBe(95);
+        const after = (await get(people.staff.cookie, base).expect(200)).body;
+        expect(after.tasks.every((t: any) => t.completedQuantity === 0 && t.qualityLevel === null)).toBe(true);
+        expect(after.evaluation.generalScore).toBeNull();
+
+        // Dữ liệu sai bị từ chối.
+        await post(people.staff.cookie, `${base}/simulate`, { tasks: [{ taskId: '00000000-0000-4000-8000-000000000000', completedQuantity: 1 }] }).expect(400);
+        await post(people.staff.cookie, `${base}/simulate`, { tasks: [{ taskId: overrides[0].taskId, completedQuantity: -1 }] }).expect(400);
+        await post(people.staff.cookie, `${base}/simulate`, { tasks: [{ taskId: overrides[0].taskId, qualityLevel: 9 }] }).expect(400);
+        await post(people.staff.cookie, `${base}/simulate`, { generalScore: 31 }).expect(400);
+        await post(people.staff.cookie, `${base}/simulate`, { khac: 1 }).expect(400);
+      });
+
       it('bước 2: chỉ chính cán bộ nhập kết quả và tự chấm', async () => {
         const result = (cookie: string, task: string, body: object) =>
           http().patch(`/api/evaluation/tasks/${task}/result`).set('Cookie', cookie).send(body);
@@ -1120,25 +1277,34 @@ describe('API (e2e)', () => {
         await result(people.staff.cookie, t2, { completedQuantity: 3 }).expect(200);
 
         const self = (cookie: string, body: object) => post(cookie, `/api/evaluation/evaluations/${evaluationId}/self-submit`, body);
-        await self(people.head.cookie, { generalScore: 25 }).expect(403);
-        await self(people.staff.cookie, { generalScore: 31 }).expect(400);
-        await self(people.staff.cookie, { generalScore: 26, comment: 'Tự đánh giá' }).expect(201);
-        await self(people.staff.cookie, { generalScore: 26 }).expect(409); // đã nộp
+        await self(people.head.cookie, STAFF_275).expect(403);
+        await self(people.staff.cookie, { generalScore: 26 }).expect(400); // kỳ có bảng tiêu chí chung thì chấm theo mục
+        await self(people.staff.cookie, { general: STAFF_275.general.slice(1) }).expect(400); // thiếu mục I.1
+        const view = (await get(people.staff.cookie, `/api/evaluation/evaluations/${evaluationId}`).expect(200)).body;
+        expect(view.generalCriteria).toMatchObject({ group: 'STAFF', groupLabel: expect.stringMatching(/Công chức/) });
+        expect(view.generalCriteria.items.map((i: any) => i.max)).toEqual([5, 5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5]);
+        const submitted = await self(people.staff.cookie, { ...STAFF_275, comment: 'Tự đánh giá' }).expect(201);
+        expect(submitted.body).toMatchObject({ selfGeneralScore: 27.5, selfGeneral: { group: 'STAFF' } });
+        await self(people.staff.cookie, STAFF_275).expect(409); // đã nộp
         await result(people.staff.cookie, t1, { completedQuantity: 1 }).expect(409);
       });
 
       it('bước 3: chỉ cấp trên trực tiếp thẩm định; thiếu mức chất lượng thì không thẩm định được', async () => {
         const review = (cookie: string, body: object) => post(cookie, `/api/evaluation/evaluations/${evaluationId}/review`, body);
-        const full = { generalScore: 25, comment: 'Hoàn thành tốt', tasks: [{ taskId: t1, qualityLevel: 1 }, { taskId: t2, qualityLevel: 2 }] };
+        // Người tự chấm để III.1 Không đảm bảo; người thẩm định nâng III.1 lên Đảm bảo và hạ I.2 nên phải ghi căn cứ cho cả hai.
+        const marks = general('STAFF', ['I.2']).general.map((m) => (m.code === 'III.1' ? { ...m, note: 'Có sáng kiến số hóa hồ sơ' } : m));
+        const full = { general: marks, comment: 'Hoàn thành tốt', tasks: [{ taskId: t1, qualityLevel: 1 }, { taskId: t2, qualityLevel: 2 }] };
         for (const who of ['staff', 'deputy', 'boss', 'other'] as Who[]) await review(people[who].cookie, full).expect(403);
         await review(sysAdmin.cookie, full).expect(403);
 
-        await review(people.head.cookie, { generalScore: 25, tasks: [{ taskId: t1, qualityLevel: 1 }] }).expect(409); // thiếu dòng t2
+        await review(people.head.cookie, { general: marks, tasks: [{ taskId: t1, qualityLevel: 1 }] }).expect(409); // thiếu dòng t2
         await review(people.head.cookie, { ...full, tasks: [{ taskId: t1, qualityLevel: 9 }, { taskId: t2, qualityLevel: 1 }] }).expect(400); // mức chất lượng ngoài 1–3
-        await review(people.head.cookie, { ...full, generalScore: 99 }).expect(400);
+        await review(people.head.cookie, { ...full, general: STAFF_25.general }).expect(400); // III.1 khác tự chấm mà không ghi căn cứ
+        await review(people.head.cookie, { ...full, general: undefined, generalScore: 25 }).expect(400);
 
         const reviewed = await review(people.head.cookie, full).expect(201);
         expect(reviewed.body.evaluation).toMatchObject({ status: 'REVIEWED', generalScore: 25, resultScore: 70, totalScore: 95, rating: 'XUAT_SAC' });
+        expect(reviewed.body.evaluation.general.items.find((m: any) => m.code === 'III.1')).toEqual({ code: 'III.1', ok: true, note: 'Có sáng kiến số hóa hồ sơ' });
         expect(reviewed.body.evaluation.scoringParams).toMatchObject({ version: 'v3-nd335', isLeader: false });
         expect(reviewed.body.preview.breakdown).toEqual({ quantity: 1, quality: 1, timeliness: 1, leadership: null, kpi: 1 });
         expect(reviewed.body.reviewerPersonId).toBe(people.head.personId);
@@ -1193,18 +1359,18 @@ describe('API (e2e)', () => {
       await post(people.head.cookie, `/api/evaluation/evaluations/${id}/return`, { reason: 'chưa nộp mà đòi trả' }).expect(409);
 
       await http().patch(`/api/evaluation/tasks/${task}/result`).set('Cookie', people.other.cookie).send({ completedQuantity: 4 }).expect(200);
-      await post(people.other.cookie, `/api/evaluation/evaluations/${id}/self-submit`, { generalScore: 20 }).expect(201);
+      await post(people.other.cookie, `/api/evaluation/evaluations/${id}/self-submit`, STAFF_20).expect(201);
 
       await post(people.deputy.cookie, `/api/evaluation/evaluations/${id}/return`, { reason: 'không phải người thẩm định' }).expect(403);
       await post(people.head.cookie, `/api/evaluation/evaluations/${id}/return`, { reason: ' ' }).expect(400);
       const returned = await post(people.head.cookie, `/api/evaluation/evaluations/${id}/return`, { reason: 'Thiếu minh chứng' }).expect(201);
       expect(returned.body).toMatchObject({ status: 'PLANNED', returnReason: 'Thiếu minh chứng' });
 
-      await post(people.other.cookie, `/api/evaluation/evaluations/${id}/self-submit`, { generalScore: 21 }).expect(201);
-      await post(people.head.cookie, `/api/evaluation/evaluations/${id}/review`, { generalScore: 20, tasks: [{ taskId: task, qualityLevel: 1 }] }).expect(201);
+      await post(people.other.cookie, `/api/evaluation/evaluations/${id}/self-submit`, STAFF_20).expect(201);
+      await post(people.head.cookie, `/api/evaluation/evaluations/${id}/review`, { ...STAFF_20, tasks: [{ taskId: task, qualityLevel: 1 }] }).expect(201);
       await post(people.head.cookie, `/api/evaluation/evaluations/${id}/return`, { reason: 'người thẩm định không trả ở bước này' }).expect(403);
       const back = await post(people.deputy.cookie, `/api/evaluation/evaluations/${id}/return`, { reason: 'Điểm chung cao quá' }).expect(201);
-      expect(back.body).toMatchObject({ status: 'PLANNED', generalScore: null, resultScore: null, totalScore: null, rating: null });
+      expect(back.body).toMatchObject({ status: 'PLANNED', generalScore: null, general: null, resultScore: null, totalScore: null, rating: null, selfGeneral: { group: 'STAFF' } });
     });
 
     it('CSDL tự kiểm tra ràng buộc của hồ sơ và chỉ tiêu', async () => {
@@ -1232,6 +1398,81 @@ describe('API (e2e)', () => {
       await post(vanPhong.cookie, `/api/evaluation/periods/${month.body.id}/close`).expect(204);
       await post(people.head.cookie, `/api/evaluation/evaluations/${created.body.id}/tasks`, { catalogItemCode: 'B.009', plannedQuantity: 1 }).expect(409);
       await post(people.head.cookie, `/api/evaluation/periods/${month.body.id}/evaluations`, { personId: people.other.personId }).expect(409);
+    });
+
+    it('người lao động hỗ trợ, phục vụ (ADR-053): cờ trên vị trí; tự đánh giá và người quản lý chấm ba tiêu chí, điểm = (a+b+c)/3 × 70', async () => {
+      const [{ id: headPos, unit_id: unitId }] = await db.query(`SELECT id, unit_id FROM job_position WHERE code = $1`, [`${E}-HEAD`]);
+      const base = { unitId, level: 5, reportsToPositionId: headPos };
+      await post(vanPhong.cookie, '/api/positions', { ...base, code: `${E}-SAI`, title: 'Sai cờ', isSupport: true, isLeader: true }).expect(400);
+      const driverPos = await post(vanPhong.cookie, '/api/positions', { ...base, code: `${E}-LAIXE`, title: 'Lái xe thử', isSupport: true }).expect(201);
+      expect(driverPos.body).toMatchObject({ isSupport: true, isLeader: false });
+      await expect(db.query(`UPDATE job_position SET is_leader = true WHERE id = $1`, [driverPos.body.id])).rejects.toThrow(/CHK_job_position_support_not_leader/);
+
+      const person = await post(vanPhong.cookie, '/api/persons', { fullName: `Lái xe ${prefix}` }).expect(201);
+      await post(vanPhong.cookie, `/api/positions/${driverPos.body.id}/assignments`, { personId: person.body.id }).expect(201);
+      const driver = await createUser('CHUYEN_VIEN');
+      await http().put(`/api/persons/${person.body.id}/account`).set('Cookie', dataAdmin.cookie).send({ accountId: driver.account.id }).expect(204);
+
+      const month = (await post(vanPhong.cookie, '/api/evaluation/periods', { type: 'MONTH', year: 2031, number: 2 }).expect(201)).body.id;
+      const created = await post(people.head.cookie, `/api/evaluation/periods/${month}/evaluations`, { personId: person.body.id }).expect(201);
+      const id = created.body.id as string;
+      const self = (body: object) => post(driver.cookie, `/api/evaluation/evaluations/${id}/self-submit`, body);
+      await self(STAFF_275).expect(400); // thiếu ba tiêu chí (không cần chỉ tiêu)
+      await self({ ...STAFF_275, support: { quality: 100, compliance: 100, efficiency: 101 } }).expect(400);
+      await self({ ...STAFF_275, support: { quality: 100, compliance: 100 } }).expect(400);
+      expect((await self({ ...STAFF_275, support: { quality: 100, compliance: 95, efficiency: 90 } }).expect(201)).body).toMatchObject({ status: 'SELF_SUBMITTED', selfSupport: { quality: 100, compliance: 95, efficiency: 90 } });
+
+      const viewed = (await get(people.head.cookie, `/api/evaluation/evaluations/${id}`).expect(200)).body;
+      // Người lao động hỗ trợ dùng bảng tiêu chí chung của công chức (Sổ tay Bộ Nội vụ Chương III mục 5).
+      expect(viewed).toMatchObject({ isSupport: true, isLeader: false, preview: { resultScore: 66.5, totalScore: 94 }, generalCriteria: { group: 'STAFF' } });
+      await get(people.head.cookie, `/api/evaluation/evaluations/${id}/insight`).expect(200).expect((r) => expect(r.body.supported).toBe(false));
+
+      const review = (body: object) => post(people.head.cookie, `/api/evaluation/evaluations/${id}/review`, body);
+      await review(STAFF_275).expect(400);
+      const reviewed = await review({ ...STAFF_275, support: { quality: 90, compliance: 90, efficiency: 60 }, comment: 'Cần tiết kiệm nhiên liệu hơn' }).expect(201);
+      // (90 + 90 + 60) / 3 = 80% → 56; tổng 27,5 + 56 = 83,5
+      expect(reviewed.body.evaluation).toMatchObject({ status: 'REVIEWED', resultScore: 56, totalScore: 83.5, rating: 'HOAN_THANH_TOT', general: { group: 'STAFF' } });
+      await post(people.deputy.cookie, `/api/evaluation/evaluations/${id}/approve`, { comment: 'Đồng ý' }).expect(201);
+
+      const [row] = await db.query(`SELECT support, self_support, scoring_params, status FROM evaluation WHERE id = $1`, [id]);
+      expect(row).toMatchObject({ status: 'APPROVED', support: { quality: 90, compliance: 90, efficiency: 60 }, self_support: { quality: 100, compliance: 95, efficiency: 90 } });
+      expect(row.scoring_params).toMatchObject({ policy: 'support-v1-sotay-bnv', rate: 0.8 });
+      await expect(db.query(`UPDATE evaluation SET support = NULL WHERE id = $1`, [id])).rejects.toThrow(/đã phê duyệt/);
+
+      // chuyên viên thường không được gửi ba tiêu chí
+      const month3 = (await post(vanPhong.cookie, '/api/evaluation/periods', { type: 'MONTH', year: 2031, number: 3 }).expect(201)).body.id;
+      const staffEval = (await post(people.head.cookie, `/api/evaluation/periods/${month3}/evaluations`, { personId: people.staff.personId }).expect(201)).body.id;
+      await post(people.head.cookie, `/api/evaluation/evaluations/${staffEval}/tasks`, { catalogItemCode: 'B.009', plannedQuantity: 1 }).expect(201);
+      await post(people.staff.cookie, `/api/evaluation/evaluations/${staffEval}/self-submit`, { ...STAFF_25, support: { quality: 100, compliance: 100, efficiency: 100 } }).expect(400);
+
+      // xuất Excel cơ cấu có cột "Hỗ trợ, phục vụ"
+      const tree = (await get(vanPhong.cookie, '/api/org/tree').expect(200)).body;
+      expect(JSON.stringify(tree)).toContain('"isSupport":true');
+    });
+
+    it('kỷ luật, kết luận (ADR-055): Văn phòng ghi nhận; chỉ cán bộ, cấp trên xem được; kỳ có kỷ luật thì mục kỷ luật phải Không đảm bảo', async () => {
+      const url = `/api/evaluation/persons/${people.staff.personId}/rating-events`;
+      const body = { kind: 'KY_LUAT', effectiveDate: '2031-04-10', decisionNo: '15-QĐ/ĐU', form: 'KHIEN_TRACH', system: 'DANG', reason: 'CONG_VU', note: 'Vi phạm quy chế văn thư' };
+      await post(people.head.cookie, url, body).expect(403); // chỉ Văn phòng ghi nhận
+      await post(vanPhong.cookie, url, { ...body, form: undefined }).expect(400);
+      const created = (await post(vanPhong.cookie, url, body).expect(201)).body;
+      expect(created).toMatchObject({ kind: 'KY_LUAT', decisionNo: '15-QĐ/ĐU', reason: 'CONG_VU' });
+      expect((await get(people.staff.cookie, `${url}?year=2031`).expect(200)).body).toHaveLength(1);
+      expect((await get(people.head.cookie, `${url}?year=2031`).expect(200)).body).toHaveLength(1);
+      await get(people.other.cookie, `${url}?year=2031`).expect(403);
+      await expect(db.query(`UPDATE rating_event SET form = NULL WHERE id = $1`, [created.id])).rejects.toThrow(/CHK_rating_event_discipline/);
+
+      const month = (await post(vanPhong.cookie, '/api/evaluation/periods', { type: 'MONTH', year: 2031, number: 4 }).expect(201)).body.id;
+      const id = (await post(people.head.cookie, `/api/evaluation/periods/${month}/evaluations`, { personId: people.staff.personId }).expect(201)).body.id;
+      const task = (await post(people.head.cookie, `/api/evaluation/evaluations/${id}/tasks`, { catalogItemCode: 'B.009', plannedQuantity: 1 }).expect(201)).body.id;
+      await http().patch(`/api/evaluation/tasks/${task}/result`).set('Cookie', people.staff.cookie).send({ completedQuantity: 1 }).expect(200);
+      const view = (await get(people.head.cookie, `/api/evaluation/evaluations/${id}`).expect(200)).body;
+      expect(view.forcedItems.map((f: any) => f.code)).toEqual(['I.1', 'I.2']);
+      await post(people.staff.cookie, `/api/evaluation/evaluations/${id}/self-submit`, STAFF_25).expect(400); // I.1 vẫn Đảm bảo
+      await post(people.staff.cookie, `/api/evaluation/evaluations/${id}/self-submit`, STAFF_20).expect(201);
+
+      await http().delete(`/api/evaluation/rating-events/${created.id}`).set('Cookie', people.head.cookie).expect(403);
+      await http().delete(`/api/evaluation/rating-events/${created.id}`).set('Cookie', vanPhong.cookie).expect(204);
     });
 
     it('hồ sơ của vị trí cấp 1 không tạo được (không có cấp trên trong hệ thống)', async () => {
@@ -2189,7 +2430,7 @@ describe('API (e2e)', () => {
 
       it('danh sách trục: ai có quyền xem đều xem được; chỉ Văn phòng sửa; tổng sai bị từ chối; khôi phục cấu hình mặc định', async () => {
         const current = (await get(vanPhong.cookie, '/api/unit-evaluation/axes').expect(200)).body as any[];
-        expect(current.map((a) => a.code)).toEqual(['G1', 'G2', 'G3', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
+        expect(current.map((a) => a.code)).toEqual(['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'BAN1', 'BAN2', 'BAN3', 'KH', 'CS', 'DN']); // QĐ 366 Phụ lục 1 (ADR-052)
         expect(current.every((a) => a.active === false)).toBe(true); // đã tắt ở đầu khối
         await get(people.head.cookie, '/api/unit-evaluation/axes').expect(200);
         await get(sysAdmin.cookie, '/api/unit-evaluation/axes').expect(403);
@@ -2197,21 +2438,21 @@ describe('API (e2e)', () => {
         defaults = current.map((a) => ({ ...a, active: true }));
         await putAxes(people.head.cookie, defaults).expect(403);
         await putAxes(rep.cookie, defaults).expect(403);
-        await putAxes(vanPhong.cookie, defaults.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 9 } : a))).expect(400); // tổng kết quả 74
-        await putAxes(vanPhong.cookie, defaults.map((a) => (a.code === 'G1' ? { ...a, code: 'g-1' } : a))).expect(400);
+        await putAxes(vanPhong.cookie, defaults.map((a) => (a.code === 'CS' ? { ...a, maxPoints: 9 } : a))).expect(400); // tổng kết quả 74
+        await putAxes(vanPhong.cookie, defaults.map((a) => (a.code === 'C1' ? { ...a, code: 'c-1' } : a))).expect(400);
         const saved = await putAxes(vanPhong.cookie, defaults).expect(200);
-        expect(saved.body.filter((a: any) => a.active)).toHaveLength(9);
+        expect(saved.body.filter((a: any) => a.active)).toHaveLength(12);
       });
 
-      it('phòng chấm theo trục: điểm nhóm là tổng các trục; thiếu hoặc vượt trục bị từ chối; gợi ý T2; ảnh chụp trục lưu ở CSDL', async () => {
+      it('phòng chấm theo trục: điểm nhóm là tổng các trục; thiếu hoặc vượt trục bị từ chối; gợi ý KH; ảnh chụp trục lưu ở CSDL', async () => {
         year33 = (await post(vanPhong.cookie, '/api/evaluation/periods', { type: 'YEAR', year: 2033 }).expect(201)).body.id;
         await post(vanPhong.cookie, `/api/unit-evaluation/periods/${year33}/generate`).expect(200);
         record = ((await get(vanPhong.cookie, `/api/unit-evaluation/periods/${year33}`).expect(200)).body as any[]).find((r) => r.unit.code === `${E}P`).evaluation.id;
 
         const self = (body: object) => post(people.head.cookie, `/api/unit-evaluation/${record}/self-submit`, body);
         await self({ generalScore: 25, resultScore: 60 }).expect(400); // có trục đang bật thì phải chấm theo trục
-        await self({ axes: axisScores(defaults, (a) => a.maxPoints).slice(1) }).expect(400); // thiếu G1
-        await self({ axes: axisScores(defaults, (a) => (a.code === 'T6' ? 6 : a.maxPoints)) }).expect(400); // vượt tối đa của T6
+        await self({ axes: axisScores(defaults, (a) => a.maxPoints).slice(1) }).expect(400); // thiếu C1
+        await self({ axes: axisScores(defaults, (a) => (a.code === 'CS' ? 6 : a.maxPoints)) }).expect(400); // vượt tối đa của CS
         await self({ axes: [...axisScores(defaults, (a) => a.maxPoints), { code: 'X9', score: 1 }] }).expect(400);
         const submitted = await self({ axes: axisScores(defaults, (a) => a.maxPoints * 0.8), comment: 'Tự chấm theo trục' }).expect(201);
         expect(submitted.body).toMatchObject({ status: 'SELF_SUBMITTED', selfGeneralScore: 24, selfResultScore: 56 });
@@ -2223,28 +2464,28 @@ describe('API (e2e)', () => {
         await review(people.deputy.cookie, { generalScore: 27, resultScore: 65 }).expect(400); // gửi hai số khi có trục
         const reviewed = await review(people.deputy.cookie, { axes: axisScores(defaults, (a) => a.maxPoints * 0.9), comment: 'Thẩm định theo trục' }).expect(201);
         expect(reviewed.body.evaluation).toMatchObject({ status: 'REVIEWED', generalScore: 27, resultScore: 63, totalScore: 90, rating: 'XUAT_SAC' });
-        expect(reviewed.body.axes).toHaveLength(9);
-        expect(reviewed.body.suggested).toEqual({}); // chưa có việc nào nên chưa có gợi ý T2
+        expect(reviewed.body.axes).toHaveLength(12);
+        expect(reviewed.body.suggested).toEqual({}); // chưa có việc nào nên chưa có gợi ý KH
 
         const approved = await post(people.boss.cookie, `/api/unit-evaluation/${record}/approve`, { comment: 'Công nhận' }).expect(201);
         expect(approved.body.evaluation.status).toBe('APPROVED');
 
         const rows = await db.query(`SELECT axis_scores, self_axis_scores FROM unit_evaluation WHERE id = $1`, [record]);
-        expect(rows[0].axis_scores).toHaveLength(9);
-        expect(rows[0].axis_scores.find((a: any) => a.code === 'T2')).toMatchObject({ kind: 'RESULT', max: 20, score: 18 });
-        expect(rows[0].self_axis_scores).toHaveLength(9);
+        expect(rows[0].axis_scores).toHaveLength(12);
+        expect(rows[0].axis_scores.find((a: any) => a.code === 'KH')).toMatchObject({ kind: 'RESULT', max: 15, score: 13.5 });
+        expect(rows[0].self_axis_scores).toHaveLength(12);
       });
 
       it('sau khi phê duyệt: thành viên xem điểm từng trục, không thấy điểm tự chấm hay gợi ý; đổi cấu hình trục không đổi hồ sơ cũ', async () => {
         const member = (await get(people.staff.cookie, `/api/unit-evaluation/${record}`).expect(200)).body;
-        expect(member.evaluation.axisScores).toHaveLength(9);
+        expect(member.evaluation.axisScores).toHaveLength(12);
         expect(member.evaluation.selfAxisScores).toBeNull();
         expect(member.suggested).toEqual({});
 
-        await putAxes(vanPhong.cookie, defaults.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 4 } : a.code === 'T1' ? { ...a, maxPoints: 16 } : a))).expect(200);
+        await putAxes(vanPhong.cookie, defaults.map((a) => (a.code === 'CS' ? { ...a, maxPoints: 4 } : a.code === 'BAN1' ? { ...a, maxPoints: 21 } : a))).expect(200);
         const again = (await get(people.deputy.cookie, `/api/unit-evaluation/${record}`).expect(200)).body;
         expect(again.evaluation.resultScore).toBe(63);
-        expect(again.evaluation.axisScores.find((a: any) => a.code === 'T6')).toMatchObject({ max: 5 });
+        expect(again.evaluation.axisScores.find((a: any) => a.code === 'CS')).toMatchObject({ max: 5 });
         await putAxes(vanPhong.cookie, defaults).expect(200); // trả về mặc định
 
         const log = await auditRows(`WHERE action = 'unit-evaluation.axes.update' ORDER BY id`);
@@ -2254,10 +2495,10 @@ describe('API (e2e)', () => {
 
       it('báo cáo tập thể tách theo trục: trung bình từng trục, điểm từng trục của hồ sơ, Excel có trang "Theo trục" (ADR-037)', async () => {
         const report = (await get(vanPhong.cookie, `/api/reporting/periods/${year33}/units`).expect(200)).body;
-        expect(report.axisSummary).toHaveLength(9);
-        expect(report.axisSummary.find((a: any) => a.code === 'T2')).toMatchObject({ kind: 'RESULT', maxPoints: 20, count: 1, average: 18, ratio: 0.9, lowest: 18 });
+        expect(report.axisSummary).toHaveLength(12);
+        expect(report.axisSummary.find((a: any) => a.code === 'KH')).toMatchObject({ kind: 'RESULT', maxPoints: 15, count: 1, average: 13.5, ratio: 0.9, lowest: 13.5 });
         const row = report.rows.find((r: any) => r.unitName === `Phòng thử ${E}`);
-        expect(row.axes).toHaveLength(9);
+        expect(row.axes).toHaveLength(12);
 
         const file = await binary(vanPhong.cookie, `/api/reporting/periods/${year33}/units/export`).expect(200);
         const wb = new ExcelJS.Workbook();
@@ -2267,6 +2508,60 @@ describe('API (e2e)', () => {
         const lines: string[] = [];
         sheet.eachRow((r) => lines.push(String(r.getCell(2).value)));
         expect(lines).toEqual(expect.arrayContaining([`Phòng thử ${E}`, 'Trung bình', 'Thấp nhất']));
+      });
+
+      it('bộ trục riêng của phòng (ADR-052): chấm theo bộ riêng, Ban vẫn theo bộ mặc định, bỏ bộ riêng thì dùng lại mặc định', async () => {
+        const sets = (await get(vanPhong.cookie, '/api/unit-evaluation/axis-sets').expect(200)).body as any[];
+        expect(sets[0]).toMatchObject({ unitId: null, own: true });
+        const phong = sets.find((x) => x.unitCode === `${E}P`);
+        expect(phong).toMatchObject({ own: false });
+        expect(phong.axes.map((a: any) => a.code)).toEqual(defaults.map((a) => a.code));
+        await get(people.head.cookie, '/api/unit-evaluation/axis-sets').expect(200);
+        await get(sysAdmin.cookie, '/api/unit-evaluation/axis-sets').expect(403);
+
+        // bộ riêng: giữ sáu tiêu chí chung, thay phần đặc thù BAN1–BAN3 bằng hai trục của phòng
+        const own = [
+          ...defaults.filter((a) => a.kind === 'GENERAL' || ['KH', 'CS', 'DN'].includes(a.code)),
+          { code: 'TC1', name: 'Tham mưu đề án tổ chức bộ máy', kind: 'RESULT', maxPoints: 25, sortOrder: 110, autoMetric: null, active: true },
+          { code: 'TC2', name: 'Thẩm định nhân sự', kind: 'RESULT', maxPoints: 15, sortOrder: 120, autoMetric: null, active: true },
+        ];
+        const putOwn = (cookie: string, body: object) => http().put('/api/unit-evaluation/axes').set('Cookie', cookie).send(body);
+        await putOwn(people.head.cookie, { unitId: phong.unitId, axes: own }).expect(403);
+        await putOwn(vanPhong.cookie, { unitId: '00000000-0000-4000-8000-000000000000', axes: own }).expect(404);
+        await putOwn(vanPhong.cookie, { unitId: 'khong-phai-uuid', axes: own }).expect(400);
+        await putOwn(vanPhong.cookie, { unitId: phong.unitId, axes: [] }).expect(400);
+        await putOwn(vanPhong.cookie, { unitId: phong.unitId, axes: own.map((a) => (a.code === 'TC2' ? { ...a, maxPoints: 10 } : a)) }).expect(400); // tổng 65
+        expect((await putOwn(vanPhong.cookie, { unitId: phong.unitId, axes: own }).expect(200)).body).toHaveLength(11);
+        expect(((await get(vanPhong.cookie, `/api/unit-evaluation/axes?unitId=${phong.unitId}`).expect(200)).body as any[]).map((a) => a.code)).toContain('TC1');
+        expect(((await get(vanPhong.cookie, '/api/unit-evaluation/axes').expect(200)).body as any[]).map((a) => a.code)).toContain('BAN1'); // bộ mặc định không đổi
+
+        const year37 = (await post(vanPhong.cookie, '/api/evaluation/periods', { type: 'YEAR', year: 2037 }).expect(201)).body.id;
+        await post(vanPhong.cookie, `/api/unit-evaluation/periods/${year37}/generate`).expect(200);
+        const recs = (await get(vanPhong.cookie, `/api/unit-evaluation/periods/${year37}`).expect(200)).body as any[];
+        const rec = recs.find((r) => r.unit.code === `${E}P`);
+        expect(rec.axes.map((a: any) => a.code)).toEqual(expect.arrayContaining(['TC1', 'TC2', 'KH']));
+        expect(rec.axes.map((a: any) => a.code)).not.toContain('BAN1');
+        expect(recs.find((r) => r.unit.code === `${E}B`).axes.map((a: any) => a.code)).toContain('BAN1');
+
+        await post(people.head.cookie, `/api/unit-evaluation/${rec.evaluation.id}/self-submit`, { axes: axisScores(defaults, (a) => a.maxPoints) }).expect(400); // mã BAN1 không thuộc bộ của phòng
+        const submitted = await post(people.head.cookie, `/api/unit-evaluation/${rec.evaluation.id}/self-submit`, { axes: axisScores(own, (a) => a.maxPoints * 0.8) }).expect(201);
+        expect(submitted.body).toMatchObject({ selfGeneralScore: 24, selfResultScore: 56 });
+
+        // hồ sơ của phòng đang chờ: chặn sửa, bỏ bộ của phòng; bộ mặc định (Ban không có hồ sơ đang chờ) vẫn sửa được
+        await putOwn(vanPhong.cookie, { unitId: phong.unitId, axes: own }).expect(409);
+        await http().delete(`/api/unit-evaluation/axes/${phong.unitId}`).set('Cookie', vanPhong.cookie).expect(409);
+        await putAxes(vanPhong.cookie, defaults).expect(200);
+
+        await post(people.deputy.cookie, `/api/unit-evaluation/${rec.evaluation.id}/return`, { reason: 'Trả lại để kiểm tra bộ trục' }).expect(201);
+        await http().delete(`/api/unit-evaluation/axes/${phong.unitId}`).set('Cookie', people.head.cookie).expect(403);
+        const reset = await http().delete(`/api/unit-evaluation/axes/${phong.unitId}`).set('Cookie', vanPhong.cookie).expect(200);
+        expect(reset.body.map((a: any) => a.code)).toContain('BAN1');
+        await http().delete(`/api/unit-evaluation/axes/${phong.unitId}`).set('Cookie', vanPhong.cookie).expect(409); // không còn bộ riêng
+        expect(((await get(vanPhong.cookie, '/api/unit-evaluation/axis-sets').expect(200)).body as any[]).find((x) => x.unitCode === `${E}P`).own).toBe(false);
+
+        const log = await auditRows(`WHERE action IN ('unit-evaluation.axes.update', 'unit-evaluation.axes.reset') AND target_id = $1 ORDER BY id`, [phong.unitId]);
+        expect(log.map((r) => r.action)).toEqual(['unit-evaluation.axes.update', 'unit-evaluation.axes.reset']);
+        expect(log.every((r) => r.module === 'evaluation' && r.type === 'UPDATE')).toBe(true);
       });
 
       describe('khiếu nại trước khi công nhận và hạn 15/12 (ADR-038)', () => {
@@ -2913,6 +3208,532 @@ describe('API (e2e)', () => {
       const rows = await auditRows(`WHERE action = 'tasking.export' ORDER BY id`);
       expect(rows.some((r) => r.details.scope === 'all' && r.details.format === 'pdf')).toBe(true);
       expect(rows.some((r) => r.details.states?.join() === 'OVERDUE,DONE')).toBe(true);
+    });
+
+    it('cảnh báo sớm: theo phạm vi của người gọi; việc quá hạn là nguy cơ cao', async () => {
+      const all = (await http().get('/api/tasking/assignments/early-warning?scope=all').set('Cookie', vanPhong.cookie).expect(200)).body;
+      expect(all).toMatchObject({ high: expect.any(Number), medium: expect.any(Number) });
+      expect(all.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(all.items.length).toBe(all.high + all.medium);
+      // Việc quá hạn trong dữ liệu thử phải xuất hiện, mức cao, có tên người nhận.
+      const overdue = all.items.filter((i: any) => i.kind === 'OVERDUE');
+      expect(overdue.length).toBeGreaterThan(0);
+      expect(overdue.every((i: any) => i.level === 'HIGH' && i.daysLeft < 0 && typeof i.assigneeName === 'string')).toBe(true);
+      // Không có phạm vi toàn bộ thì bị từ chối; phạm vi của mình luôn xem được; không đăng nhập thì 401.
+      await http().get('/api/tasking/assignments/early-warning?scope=all').set('Cookie', staff.cookie).expect(403);
+      await http().get('/api/tasking/assignments/early-warning?scope=mine').set('Cookie', staff.cookie).expect(200);
+      await http().get('/api/tasking/assignments/early-warning').expect(401);
+      await http().get('/api/tasking/assignments/early-warning?scope=khac').set('Cookie', staff.cookie).expect(400);
+    });
+  });
+
+  describe('đề án, dự án (ADR-050)', () => {
+    const P = `${prefix.toUpperCase()}DA`;
+    type Who = 'boss' | 'head' | 'staff' | 'outsider';
+    const roleOf: Record<Who, Role> = { boss: 'TRUONG_BAN', head: 'TRUONG_PHO_PHONG', staff: 'CHUYEN_VIEN', outsider: 'CHUYEN_VIEN' };
+    const people = {} as Record<Who, { cookie: string; personId: string }>;
+    let vanPhong: Awaited<ReturnType<typeof createUser>>;
+    let projectId: string;
+    let m1: string;
+    let m2: string;
+    let workId: string;
+
+    const post = (cookie: string, url: string, body: object = {}) => http().post(url).set('Cookie', cookie).send(body);
+    const get = (cookie: string, url: string) => http().get(url).set('Cookie', cookie);
+    const binary = (cookie: string, url: string) =>
+      http()
+        .get(url)
+        .set('Cookie', cookie)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+    const ymd = (offsetDays: number) => new Date(Date.now() + 7 * 3_600_000 + offsetDays * 86_400_000).toISOString().slice(0, 10);
+
+    beforeAll(async () => {
+      vanPhong = await createUser('VAN_PHONG');
+      const dataAdmin = await createUser('QUAN_TRI_DU_LIEU');
+      const unit = await post(vanPhong.cookie, '/api/units', { code: P, name: 'Đơn vị thử đề án', type: 'BAN' }).expect(201);
+      const position = async (key: string, title: string, level: number, parent?: string) =>
+        (await post(vanPhong.cookie, '/api/positions', { code: `${P}-${key}`, unitId: unit.body.id, title, level, reportsToPositionId: parent }).expect(201)).body.id as string;
+      const pos = {} as Record<Who, string>;
+      pos.boss = await position('BOSS', 'Trưởng ban thử đề án', 1);
+      pos.head = await position('HEAD', 'Trưởng phòng thử đề án', 3, pos.boss);
+      pos.staff = await position('STAFF', 'Chuyên viên thử đề án', 5, pos.head);
+      pos.outsider = await position('OUT', 'Chuyên viên khác', 5, pos.boss);
+      for (const key of Object.keys(roleOf) as Who[]) {
+        const person = await post(vanPhong.cookie, '/api/persons', { fullName: `Cán bộ đề án ${key} ${prefix}` }).expect(201);
+        await post(vanPhong.cookie, `/api/positions/${pos[key]}/assignments`, { personId: person.body.id }).expect(201);
+        const user = await createUser(roleOf[key]);
+        await http().put(`/api/persons/${person.body.id}/account`).set('Cookie', dataAdmin.cookie).send({ accountId: user.account.id }).expect(204);
+        people[key] = { cookie: user.cookie, personId: person.body.id };
+      }
+    });
+
+    it('lập đề án: chỉ lãnh đạo có quyền lập; dữ liệu sai bị từ chối; chủ trì phải là mình hoặc cấp dưới', async () => {
+      const body = { kind: 'DE_AN', title: 'Đề án thử nghiệm đề án', objective: 'Mục tiêu thử', startDate: ymd(-5), endDate: ymd(60) };
+      await post(people.staff.cookie, '/api/projects', body).expect(403);
+      await post(vanPhong.cookie, '/api/projects', body).expect(403);
+      await post(people.head.cookie, '/api/projects', { ...body, kind: 'KHAC' }).expect(400);
+      await post(people.head.cookie, '/api/projects', { ...body, title: 'ab' }).expect(400);
+      await post(people.head.cookie, '/api/projects', { ...body, endDate: ymd(-10) }).expect(400);
+      await post(people.head.cookie, '/api/projects', { ...body, khac: 1 }).expect(400);
+      await post(people.head.cookie, '/api/projects', { ...body, ownerPersonId: people.boss.personId }).expect(403); // cấp trên không phải cấp dưới
+      const created = await post(people.head.cookie, '/api/projects', body).expect(201);
+      projectId = created.body.id;
+      expect(created.body).toMatchObject({ kind: 'DE_AN', status: 'DRAFT', ownerPersonId: people.head.personId });
+      expect(created.body.code).toMatch(/^DA-\d{4}-\d{3}$/);
+    });
+
+    it('chỉ chủ trì sửa; người ngoài và người chỉ có quyền xem không xem được hồ sơ đang soạn của người khác', async () => {
+      await http().patch(`/api/projects/${projectId}`).set('Cookie', people.staff.cookie).send({ title: 'Đổi tên' }).expect(403);
+      await get(people.outsider.cookie, `/api/projects/${projectId}`).expect(403);
+      await get(people.staff.cookie, `/api/projects/${projectId}`).expect(403); // chưa là thành viên
+      const upd = await http().patch(`/api/projects/${projectId}`).set('Cookie', people.head.cookie).send({ description: 'Nội dung chi tiết' }).expect(200);
+      expect(upd.body.description).toBe('Nội dung chi tiết');
+      await get(people.boss.cookie, `/api/projects/${projectId}`).expect(200);
+      await get(vanPhong.cookie, `/api/projects/${projectId}`).expect(200);
+    });
+
+    it('thành viên, mốc tiến độ; trình duyệt cần có mốc; chỉ Trưởng ban duyệt', async () => {
+      await post(people.head.cookie, `/api/projects/${projectId}/submit`).expect(409); // chưa có mốc
+      await post(people.head.cookie, `/api/projects/${projectId}/members`, { personId: people.staff.personId }).expect(204);
+      await post(people.head.cookie, `/api/projects/${projectId}/members`, { personId: people.staff.personId }).expect(409);
+      await post(people.head.cookie, `/api/projects/${projectId}/members`, { personId: '00000000-0000-4000-8000-000000000000' }).expect(400);
+      const mile = (body: object) => post(people.head.cookie, `/api/projects/${projectId}/milestones`, body);
+      await mile({ title: 'Mốc ngoài thời gian', dueDate: ymd(300) }).expect(400);
+      await mile({ title: 'Mốc sai trọng số', dueDate: ymd(10), weight: 0 }).expect(400);
+      m1 = (await mile({ title: 'Dự thảo đề án', dueDate: ymd(-1), weight: 2, assigneePersonId: people.staff.personId }).expect(201)).body.id;
+      m2 = (await mile({ title: 'Trình Ban Thường vụ', dueDate: ymd(30) }).expect(201)).body.id;
+      await post(people.staff.cookie, `/api/projects/${projectId}/submit`).expect(403);
+      await post(people.head.cookie, `/api/projects/${projectId}/submit`).expect(200);
+      await post(people.head.cookie, `/api/projects/${projectId}/approve`).expect(403); // không có quyền duyệt
+      await post(people.staff.cookie, `/api/projects/${projectId}/approve`).expect(403);
+      const back = await post(people.boss.cookie, `/api/projects/${projectId}/return`, { reason: 'Cần bổ sung căn cứ' }).expect(200);
+      expect(back.body).toMatchObject({ status: 'DRAFT', returnReason: 'Cần bổ sung căn cứ' });
+      await post(people.head.cookie, `/api/projects/${projectId}/submit`).expect(200);
+      const ok = await post(people.boss.cookie, `/api/projects/${projectId}/approve`).expect(200);
+      expect(ok.body).toMatchObject({ status: 'ACTIVE' });
+      await post(people.boss.cookie, `/api/projects/${projectId}/approve`).expect(409);
+    });
+
+    it('thành viên xem được; người ngoài không; danh sách theo phạm vi', async () => {
+      await get(people.staff.cookie, `/api/projects/${projectId}`).expect(200);
+      await get(people.outsider.cookie, `/api/projects/${projectId}`).expect(403);
+      const ids = async (cookie: string, q: string) => (await get(cookie, `/api/projects${q}`).expect(200)).body.map((r: any) => r.project.id);
+      expect(await ids(people.staff.cookie, '')).toContain(projectId);
+      expect(await ids(people.outsider.cookie, '')).not.toContain(projectId);
+      expect(await ids(people.boss.cookie, '?scope=team')).toContain(projectId);
+      expect(await ids(people.boss.cookie, '?scope=all')).toContain(projectId);
+      expect(await ids(vanPhong.cookie, '?scope=all&status=ACTIVE&q=thu%20nghiem')).toContain(projectId);
+      await get(people.head.cookie, '/api/projects?scope=all').expect(403);
+      await get(people.head.cookie, '/api/projects?scope=khac').expect(400);
+      await get(people.head.cookie, '/api/projects?status=KHAC').expect(400);
+      // Quản trị hệ thống không có vai trò nghiệp vụ và không thuộc đề án nào: xem được danh sách của mình (rỗng), không lập, không xem tất cả.
+      expect((await get(sysAdminCookie(), '/api/projects').expect(200)).body).toEqual([]);
+      await get(sysAdminCookie(), '/api/projects?scope=all').expect(403);
+      await post(sysAdminCookie(), '/api/projects', { kind: 'DE_AN', title: 'Quản trị lập đề án', startDate: ymd(0), endDate: ymd(10) }).expect(403);
+      await get(sysAdminCookie(), `/api/projects/${projectId}`).expect(403);
+      await http().get('/api/projects').expect(401);
+    });
+
+    // quản trị hệ thống không có vai trò nghiệp vụ nên không thấy đề án của người khác
+    const sysAdminCookie = () => adminCookie;
+    let adminCookie: string;
+    beforeAll(async () => {
+      adminCookie = (await createUser('QUAN_TRI_HE_THONG')).cookie;
+    });
+
+    it('chi tiết: tiến độ, mốc quá hạn, quyền thao tác theo vai trò', async () => {
+      const asHead = (await get(people.head.cookie, `/api/projects/${projectId}`).expect(200)).body;
+      expect(asHead.progress).toMatchObject({ total: 2, done: 0, overdue: 1, ratio: 0 });
+      expect(asHead.can).toMatchObject({ edit: true, approve: false, complete: false, manageMilestones: true, link: true });
+      expect(asHead.members.map((m: any) => m.role)).toEqual(['LEAD', 'MEMBER']);
+      const asBoss = (await get(people.boss.cookie, `/api/projects/${projectId}`).expect(200)).body;
+      expect(asBoss.can).toMatchObject({ edit: false, complete: true, cancel: true });
+      const asStaff = (await get(people.staff.cookie, `/api/projects/${projectId}`).expect(200)).body;
+      expect(asStaff.can).toMatchObject({ edit: false, manageMilestones: false });
+    });
+
+    it('cảnh báo sớm và thống kê: mốc quá hạn được nêu; theo phạm vi', async () => {
+      const w = (await get(people.head.cookie, '/api/projects/early-warning').expect(200)).body;
+      expect(w.items.find((i: any) => i.milestoneId === m1)).toMatchObject({ kind: 'MILESTONE_OVERDUE', level: 'HIGH', projectId });
+      expect(w.items.find((i: any) => i.milestoneId === m2)).toBeUndefined(); // còn 30 ngày
+      await get(people.head.cookie, '/api/projects/early-warning?scope=all').expect(403);
+      expect((await get(people.outsider.cookie, '/api/projects/early-warning').expect(200)).body.items).toEqual([]);
+      const stats = (await get(vanPhong.cookie, '/api/projects/statistics?scope=all').expect(200)).body;
+      expect(stats.byStatus.ACTIVE).toBeGreaterThanOrEqual(1);
+      expect(stats.active.overdueMilestones).toBeGreaterThanOrEqual(1);
+      expect(stats.byUnit.length).toBeGreaterThan(0);
+    });
+
+    it('báo mốc xong: người phụ trách hoặc chủ trì; người khác không; mở lại chỉ chủ trì', async () => {
+      await post(people.outsider.cookie, `/api/projects/${projectId}/milestones/${m1}/done`).expect(403);
+      await post(people.staff.cookie, `/api/projects/${projectId}/milestones/${m2}/done`).expect(403); // không phải mốc của staff
+      await post(people.staff.cookie, `/api/projects/${projectId}/milestones/${m1}/done`, { completedOn: ymd(5) }).expect(400); // tương lai
+      const done = await post(people.staff.cookie, `/api/projects/${projectId}/milestones/${m1}/done`, { note: 'Đã gửi dự thảo' }).expect(200);
+      expect(done.body).toMatchObject({ status: 'DONE', completedOn: ymd(0) });
+      await post(people.staff.cookie, `/api/projects/${projectId}/milestones/${m1}/reopen`).expect(403);
+      const detail = (await get(people.head.cookie, `/api/projects/${projectId}`).expect(200)).body;
+      expect(detail.progress.ratio).toBeCloseTo(2 / 3, 3);
+      await http().patch(`/api/projects/${projectId}/milestones/${m1}`).set('Cookie', people.head.cookie).send({ title: 'Đổi' }).expect(409); // đã xong
+    });
+
+    it('gắn việc được giao vào đề án; chỉ người giao và chủ trì; gỡ được; điểm không đổi', async () => {
+      const task = await post(people.head.cookie, '/api/tasking/tasks', { assigneePersonId: people.staff.personId, title: `Nhiệm vụ thuộc đề án ${prefix}` }).expect(201);
+      const work = await post(people.head.cookie, '/api/tasking/assignments', { taskId: task.body.id, catalogItemCode: 'B.009', plannedQuantity: 3, dueDate: ymd(20), periodMode: 'AUTO' }).expect(201);
+      workId = work.body.assignment.id;
+      expect((await get(people.head.cookie, `/api/projects/${projectId}/link-candidates`).expect(200)).body.map((c: any) => c.assignmentId)).toContain(workId);
+      await get(people.staff.cookie, `/api/projects/${projectId}/link-candidates`).expect(403);
+      await post(people.staff.cookie, `/api/projects/${projectId}/work`, { assignmentId: workId }).expect(403);
+      await post(people.head.cookie, `/api/projects/${projectId}/work`, { assignmentId: workId }).expect(204);
+      const detail = (await get(people.head.cookie, `/api/projects/${projectId}`).expect(200)).body;
+      expect(detail.work).toHaveLength(1);
+      expect(detail.work[0]).toMatchObject({ assignmentId: workId, assigneeName: expect.stringContaining('staff'), plannedQuantity: 3 });
+      expect((await db.query(`SELECT project_id FROM work_assignment WHERE id = $1`, [workId]))[0].project_id).toBe(projectId);
+      expect((await get(people.head.cookie, '/api/projects').expect(200)).body.find((r: any) => r.project.id === projectId).workCount).toBe(1);
+      expect((await get(people.head.cookie, `/api/projects/${projectId}/link-candidates`).expect(200)).body.map((c: any) => c.assignmentId)).not.toContain(workId);
+      await http().delete(`/api/projects/${projectId}/work/${workId}`).set('Cookie', people.staff.cookie).expect(403);
+      await http().delete(`/api/projects/${projectId}/work/${workId}`).set('Cookie', people.head.cookie).expect(204);
+      expect((await db.query(`SELECT project_id FROM work_assignment WHERE id = $1`, [workId]))[0].project_id).toBeNull();
+      await post(people.head.cookie, `/api/projects/${projectId}/work`, { assignmentId: workId }).expect(204);
+    });
+
+    it('tài liệu đính kèm: tải lên, tải về, không lộ khóa lưu trữ; sai đuôi, giả đuôi bị từ chối', async () => {
+      const up = (cookie: string, name: string, data: Buffer) => http().post(`/api/projects/${projectId}/attachments`).set('Cookie', cookie).attach('file', data, name);
+      await up(people.staff.cookie, 'de-an.pdf', Buffer.from('%PDF-1.4 thu')).expect(403);
+      const ok = await up(people.head.cookie, 'dự thảo đề án.pdf', Buffer.from('%PDF-1.4 thu')).expect(201);
+      expect(ok.body).toMatchObject({ fileName: 'dự thảo đề án.pdf', contentType: 'application/pdf' });
+      expect(ok.body.storageKey).toBeUndefined();
+      await up(people.head.cookie, 'chuong-trinh.exe', Buffer.from('MZ')).expect(400);
+      await up(people.head.cookie, 'gia.pdf', Buffer.from('khong phai pdf')).expect(400);
+      const file = await binary(people.staff.cookie, `/api/projects/${projectId}/attachments/${ok.body.id}`).expect(200);
+      expect((file.body as Buffer).toString()).toBe('%PDF-1.4 thu');
+      expect(file.headers['content-disposition']).toMatch(/^attachment/);
+      await binary(people.outsider.cookie, `/api/projects/${projectId}/attachments/${ok.body.id}`).expect(403);
+      expect((await get(people.head.cookie, `/api/projects/${projectId}`).expect(200)).body.attachments).toHaveLength(1);
+    });
+
+    it('xuất Excel và PDF theo phạm vi; ghi nhật ký', async () => {
+      const x = await binary(vanPhong.cookie, '/api/projects/export?format=xlsx&scope=all').expect(200);
+      expect(x.headers['content-disposition']).toMatch(/^attachment; filename="de-an-du-an-\d{4}-\d{2}-\d{2}\.xlsx"$/);
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(x.body as ArrayBuffer);
+      expect(wb.worksheets.map((w) => w.name)).toEqual(['Danh sách', 'Mốc tiến độ', 'Thống kê', 'Theo đơn vị']);
+      expect(JSON.stringify(wb.worksheets[0].getSheetValues())).toContain('Đề án thử nghiệm đề án');
+      const pdf = await binary(people.head.cookie, '/api/projects/export?format=pdf').expect(200);
+      expect((pdf.body as Buffer).subarray(0, 5).toString()).toBe('%PDF-');
+      await binary(people.head.cookie, '/api/projects/export?format=xlsx&scope=all').expect(403);
+      await binary(people.head.cookie, '/api/projects/export').expect(400);
+      expect((await auditRows(`WHERE action = 'project.export'`)).length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('nghiệm thu chỉ khi mọi mốc xong; sau đó hồ sơ khóa; nhật ký có module "project"', async () => {
+      await post(people.boss.cookie, `/api/projects/${projectId}/complete`, {}).expect(409); // còn mốc 2
+      await post(people.head.cookie, `/api/projects/${projectId}/milestones/${m2}/done`).expect(200);
+      await post(people.head.cookie, `/api/projects/${projectId}/complete`, {}).expect(403);
+      const done = await post(people.boss.cookie, `/api/projects/${projectId}/complete`, { note: 'Đạt yêu cầu' }).expect(200);
+      expect(done.body).toMatchObject({ status: 'COMPLETED', completedOn: ymd(0) });
+      await http().patch(`/api/projects/${projectId}`).set('Cookie', people.head.cookie).send({ description: 'x' }).expect(409);
+      await post(people.head.cookie, `/api/projects/${projectId}/milestones`, { title: 'Thêm mốc', dueDate: ymd(10) }).expect(409);
+      await post(people.boss.cookie, `/api/projects/${projectId}/cancel`, { reason: 'Hủy sau nghiệm thu' }).expect(409);
+
+      const rows = await auditRows(`WHERE target_id = $1 ORDER BY id`, [projectId]);
+      const actions = rows.map((r) => r.action);
+      expect(actions).toEqual(expect.arrayContaining(['project.create', 'project.update', 'project.member.add', 'project.milestone.add', 'project.submit', 'project.return', 'project.approve', 'project.milestone.done', 'project.link', 'project.unlink', 'project.attachment.upload', 'project.complete']));
+      expect(rows.every((r) => r.module === 'project')).toBe(true);
+      expect(rows.find((r) => r.action === 'project.submit')).toMatchObject({ type: 'APPROVE' });
+      expect(rows.find((r) => r.action === 'project.milestone.add')).toMatchObject({ type: 'CREATE' });
+    });
+
+    it('hủy đề án đang soạn: người lập hủy được, cần lý do', async () => {
+      const draft = (await post(people.head.cookie, '/api/projects', { kind: 'DU_AN', title: 'Dự án sẽ hủy', startDate: ymd(0), endDate: ymd(30) }).expect(201)).body;
+      expect(draft.code).toMatch(/^DUA-/);
+      await post(people.head.cookie, `/api/projects/${draft.id}/cancel`, { reason: '' }).expect(400);
+      await post(people.outsider.cookie, `/api/projects/${draft.id}/cancel`, { reason: 'Không phải của tôi' }).expect(403);
+      expect((await post(people.head.cookie, `/api/projects/${draft.id}/cancel`, { reason: 'Không còn cần thiết' }).expect(200)).body.status).toBe('CANCELLED');
+    });
+  });
+
+  describe('lịch họp (ADR-051)', () => {
+    const M = `${prefix.toUpperCase()}LH`;
+    type Who = 'boss' | 'head' | 'staff' | 'outsider';
+    const roleOf: Record<Who, Role> = { boss: 'TRUONG_BAN', head: 'TRUONG_PHO_PHONG', staff: 'CHUYEN_VIEN', outsider: 'CHUYEN_VIEN' };
+    const people = {} as Record<Who, { cookie: string; personId: string }>;
+    let vanPhong: Awaited<ReturnType<typeof createUser>>;
+    let sysAdmin: Awaited<ReturnType<typeof createUser>>;
+    let meetingId: string;
+    let pastId: string;
+    let projectId: string;
+
+    const post = (cookie: string, url: string, body: object = {}) => http().post(url).set('Cookie', cookie).send(body);
+    const get = (cookie: string, url: string) => http().get(url).set('Cookie', cookie);
+    const hours = (n: number, base = Date.now()) => new Date(base + n * 3_600_000).toISOString();
+    /** Mốc cố định trong tương lai để các phép thử trùng lịch không phụ thuộc giờ chạy. */
+    const T0 = Date.UTC(2031, 5, 10, 2, 0, 0); // 09:00 giờ Việt Nam
+    const binary = (cookie: string, url: string) =>
+      http()
+        .get(url)
+        .set('Cookie', cookie)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+
+    beforeAll(async () => {
+      vanPhong = await createUser('VAN_PHONG');
+      sysAdmin = await createUser('QUAN_TRI_HE_THONG');
+      const dataAdmin = await createUser('QUAN_TRI_DU_LIEU');
+      const unit = await post(vanPhong.cookie, '/api/units', { code: M, name: 'Đơn vị thử lịch họp', type: 'BAN' }).expect(201);
+      const position = async (key: string, title: string, level: number, parent?: string) =>
+        (await post(vanPhong.cookie, '/api/positions', { code: `${M}-${key}`, unitId: unit.body.id, title, level, reportsToPositionId: parent }).expect(201)).body.id as string;
+      const pos = {} as Record<Who, string>;
+      pos.boss = await position('BOSS', 'Trưởng ban thử lịch họp', 1);
+      pos.head = await position('HEAD', 'Trưởng phòng thử lịch họp', 3, pos.boss);
+      pos.staff = await position('STAFF', 'Chuyên viên thử lịch họp', 5, pos.head);
+      pos.outsider = await position('OUT', 'Chuyên viên khác', 5, pos.boss);
+      for (const key of Object.keys(roleOf) as Who[]) {
+        const person = await post(vanPhong.cookie, '/api/persons', { fullName: `Cán bộ lịch họp ${key} ${prefix}` }).expect(201);
+        await post(vanPhong.cookie, `/api/positions/${pos[key]}/assignments`, { personId: person.body.id }).expect(201);
+        const user = await createUser(roleOf[key]);
+        await http().put(`/api/persons/${person.body.id}/account`).set('Cookie', dataAdmin.cookie).send({ accountId: user.account.id }).expect(204);
+        people[key] = { cookie: user.cookie, personId: person.body.id };
+      }
+      const proj = await post(people.head.cookie, '/api/projects', { kind: 'DE_AN', title: 'Đề án có cuộc họp', startDate: '2031-01-01', endDate: '2031-12-31' }).expect(201);
+      projectId = proj.body.id;
+    });
+
+    it('ai gắn với cán bộ đều tạo được; tài khoản chưa gắn cán bộ thì không; dữ liệu sai bị từ chối', async () => {
+      const body = { title: 'Họp giao ban tuần', agenda: 'Đánh giá tiến độ', startAt: hours(0, T0), endAt: hours(1.5, T0), location: 'Phòng họp 1', attendees: [{ personId: people.staff.personId }, { personId: people.outsider.personId, role: 'OPTIONAL' }] };
+      await post(sysAdmin.cookie, '/api/meetings', body).expect(403);
+      await http().post('/api/meetings').send(body).expect(401);
+      await post(people.head.cookie, '/api/meetings', { ...body, title: 'ab' }).expect(400);
+      await post(people.head.cookie, '/api/meetings', { ...body, endAt: hours(-1, T0) }).expect(400);
+      await post(people.head.cookie, '/api/meetings', { ...body, startAt: 'ngày mai' }).expect(400);
+      await post(people.head.cookie, '/api/meetings', { ...body, onlineLink: 'javascript:alert(1)' }).expect(400);
+      await post(people.head.cookie, '/api/meetings', { ...body, attendees: [{ personId: 'khong-phai-uuid' }] }).expect(400);
+      await post(people.head.cookie, '/api/meetings', { ...body, khac: 1 }).expect(400);
+      await post(people.head.cookie, '/api/meetings', { ...body, projectId: '00000000-0000-4000-8000-000000000000' }).expect(404);
+      const created = await post(people.head.cookie, '/api/meetings', { ...body, projectId }).expect(201);
+      meetingId = created.body.meeting.id;
+      expect(created.body.meeting).toMatchObject({ status: 'SCHEDULED', organizerPersonId: people.head.personId, projectId });
+      expect(created.body.conflicts).toEqual([]);
+      // một cán bộ không xem được đề án thì không gắn được
+      await post(people.outsider.cookie, '/api/meetings', { ...body, title: 'Họp gắn đề án người khác', startAt: hours(10, T0), endAt: hours(11, T0), projectId }).expect(403);
+    });
+
+    it('người được mời, chủ trì và người xem tất cả thấy cuộc họp; người ngoài không', async () => {
+      await get(people.staff.cookie, `/api/meetings/${meetingId}`).expect(200);
+      await get(people.outsider.cookie, `/api/meetings/${meetingId}`).expect(200); // được mời (không bắt buộc)
+      await get(vanPhong.cookie, `/api/meetings/${meetingId}`).expect(200);
+      await get(people.boss.cookie, `/api/meetings/${meetingId}`).expect(200);
+      const stranger = (await createUser('CHUYEN_VIEN')).cookie; // chưa gắn cán bộ
+      await get(stranger, `/api/meetings/${meetingId}`).expect(403);
+      const ids = async (cookie: string, q = '') => (await get(cookie, `/api/meetings${q}`).expect(200)).body.map((r: any) => r.meeting.id);
+      expect(await ids(people.staff.cookie)).toContain(meetingId);
+      expect(await ids(stranger)).not.toContain(meetingId);
+      expect(await ids(sysAdmin.cookie)).toEqual([]);
+      await get(people.head.cookie, '/api/meetings?scope=all').expect(403);
+      expect(await ids(vanPhong.cookie, '?scope=all')).toContain(meetingId);
+      expect(await ids(people.head.cookie, `?projectId=${projectId}`)).toEqual([meetingId]);
+      expect(await ids(people.head.cookie, `?from=${encodeURIComponent(hours(48, T0))}&to=${encodeURIComponent(hours(72, T0))}`)).not.toContain(meetingId);
+      expect(await ids(people.head.cookie, `?from=${encodeURIComponent(hours(0.5, T0))}&to=${encodeURIComponent(hours(2, T0))}`)).toContain(meetingId);
+      await get(people.head.cookie, '/api/meetings?status=KHAC').expect(400);
+      await get(people.head.cookie, '/api/meetings?from=x').expect(400);
+      await get(people.head.cookie, '/api/meetings/khong-phai-uuid').expect(400);
+    });
+
+    it('cảnh báo trùng lịch: nêu người bận, không chặn; tên cuộc họp chỉ hiện với người xem được', async () => {
+      const second = await post(people.outsider.cookie, '/api/meetings', {
+        title: 'Họp trùng giờ',
+        startAt: hours(1, T0),
+        endAt: hours(2, T0),
+        attendees: [{ personId: people.staff.personId }],
+      }).expect(201);
+      // staff và chính người tạo (cũng được mời họp kia) đều bận.
+      expect(second.body.conflicts.map((c: any) => c.personId).sort()).toEqual([people.outsider.personId, people.staff.personId].sort());
+      expect(second.body.conflicts.find((c: any) => c.personId === people.staff.personId)).toMatchObject({ title: 'Họp giao ban tuần' }); // outsider được mời họp kia nên thấy tên
+      const check = (cookie: string, body: object) => post(cookie, '/api/meetings/check-conflicts', body).expect(200);
+      const window = { startAt: hours(1, T0), endAt: hours(2, T0), attendeePersonIds: [people.staff.personId] };
+      const asHead = (await check(people.head.cookie, window)).body;
+      expect(asHead).toHaveLength(2);
+      const hidden = asHead.find((c: any) => c.title === null); // họp của outsider: head không được mời
+      expect(hidden).toMatchObject({ meetingId: null, personId: people.staff.personId });
+      expect((await check(people.head.cookie, { ...window, startAt: hours(1.5, T0), endAt: hours(3, T0), excludeMeetingId: second.body.meeting.id, attendeePersonIds: [people.boss.personId] })).body).toEqual([]);
+      expect((await check(people.head.cookie, { startAt: hours(1.5, T0), endAt: hours(1.75, T0), attendeePersonIds: [people.staff.personId], excludeMeetingId: meetingId })).body).toHaveLength(1);
+      await post(sysAdmin.cookie, '/api/meetings/check-conflicts', window).expect(403);
+      await post(people.head.cookie, '/api/meetings/check-conflicts', { ...window, attendeePersonIds: 'x' }).expect(400);
+      // hủy họp kia thì hết trùng
+      await post(people.outsider.cookie, `/api/meetings/${second.body.meeting.id}/cancel`, { reason: 'Nhầm lịch' }).expect(200);
+      expect((await check(people.head.cookie, window)).body).toHaveLength(1);
+    });
+
+    it('trả lời lời mời: tham dự hoặc từ chối kèm lý do; chủ trì và người ngoài không trả lời được', async () => {
+      await post(people.staff.cookie, `/api/meetings/${meetingId}/respond`, { response: 'DECLINED' }).expect(400);
+      await post(people.staff.cookie, `/api/meetings/${meetingId}/respond`, { response: 'KHAC' }).expect(400);
+      await post(people.head.cookie, `/api/meetings/${meetingId}/respond`, { response: 'ACCEPTED' }).expect(409);
+      await post(people.boss.cookie, `/api/meetings/${meetingId}/respond`, { response: 'ACCEPTED' }).expect(403);
+      const ok = await post(people.staff.cookie, `/api/meetings/${meetingId}/respond`, { response: 'ACCEPTED' }).expect(200);
+      expect(ok.body).toMatchObject({ response: 'ACCEPTED', personId: people.staff.personId });
+      const declined = await post(people.outsider.cookie, `/api/meetings/${meetingId}/respond`, { response: 'DECLINED', note: 'Đi công tác' }).expect(200);
+      expect(declined.body).toMatchObject({ response: 'DECLINED', note: 'Đi công tác' });
+      const detail = (await get(people.head.cookie, `/api/meetings/${meetingId}`).expect(200)).body;
+      expect(detail.attendees.map((a: any) => [a.role, a.response])).toEqual([['ORGANIZER', 'ACCEPTED'], ['REQUIRED', 'ACCEPTED'], ['OPTIONAL', 'DECLINED']]);
+      expect(detail.can).toMatchObject({ edit: true, respond: false, conclude: false });
+      expect((await get(people.staff.cookie, `/api/meetings/${meetingId}`).expect(200)).body.can).toMatchObject({ edit: false, respond: true });
+      expect(detail.project).toMatchObject({ title: 'Đề án có cuộc họp' });
+    });
+
+    it('sửa: chỉ chủ trì; đổi giờ thì hỏi lại người được mời; người dự được thêm, bớt', async () => {
+      await http().patch(`/api/meetings/${meetingId}`).set('Cookie', people.staff.cookie).send({ title: 'Đổi tên' }).expect(403);
+      const upd = await http().patch(`/api/meetings/${meetingId}`).set('Cookie', people.head.cookie).send({ startAt: hours(3, T0), endAt: hours(4, T0), attendees: [{ personId: people.staff.personId }, { personId: people.boss.personId }] }).expect(200);
+      expect(upd.body.meeting.startAt).toBe(hours(3, T0));
+      const detail = (await get(people.head.cookie, `/api/meetings/${meetingId}`).expect(200)).body;
+      expect(detail.attendees.find((a: any) => a.personId === people.staff.personId).response).toBe('PENDING'); // đổi giờ
+      expect(detail.attendees.find((a: any) => a.personId === people.outsider.personId)).toBeUndefined();
+      expect(detail.attendees.find((a: any) => a.personId === people.boss.personId)).toMatchObject({ role: 'REQUIRED', response: 'PENDING' });
+      await get(people.outsider.cookie, `/api/meetings/${meetingId}`).expect(403); // bị bớt khỏi thành phần
+    });
+
+    it('họp đã qua: kết thúc, ghi kết luận, việc sau họp, biên bản đính kèm', async () => {
+      const past = await post(people.head.cookie, '/api/meetings', {
+        title: 'Họp triển khai kế hoạch quý IV',
+        startAt: hours(-3),
+        endAt: hours(-2),
+        attendees: [{ personId: people.staff.personId }, { personId: people.outsider.personId }],
+      }).expect(201);
+      pastId = past.body.meeting.id;
+      await post(people.staff.cookie, `/api/meetings/${pastId}/respond`, { response: 'ACCEPTED' }).expect(200); // chưa kết thúc thì vẫn trả lời được
+    });
+
+    it('kết thúc họp: chưa tới giờ thì không; chỉ chủ trì; ghi kết luận, người có mặt và việc sau họp', async () => {
+      await post(people.head.cookie, `/api/meetings/${meetingId}/conclude`, { conclusion: 'Sớm quá' }).expect(409); // họp ở tương lai
+      await post(people.staff.cookie, `/api/meetings/${pastId}/conclude`, { conclusion: 'Tự kết luận' }).expect(403);
+      await post(people.head.cookie, `/api/meetings/${pastId}/conclude`, { conclusion: ' ' }).expect(400);
+      const due = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+      const action = { content: 'Gửi dự thảo kế hoạch cho Văn phòng', assigneePersonId: people.staff.personId, dueDate: due };
+      await post(people.head.cookie, `/api/meetings/${pastId}/conclude`, { conclusion: 'Thống nhất', actions: [{ ...action, assigneePersonId: people.boss.personId }] }).expect(400); // không thuộc thành phần
+      await post(people.head.cookie, `/api/meetings/${pastId}/conclude`, { conclusion: 'Thống nhất', actions: [{ ...action, dueDate: '2020-01-01' }] }).expect(400);
+      expect((await get(people.head.cookie, `/api/meetings/${pastId}`).expect(200)).body.meeting.status).toBe('SCHEDULED'); // lỗi thì không đổi gì
+      const done = await post(people.head.cookie, `/api/meetings/${pastId}/conclude`, { conclusion: 'Thống nhất triển khai trong tháng', attendedPersonIds: [people.head.personId, people.staff.personId], actions: [action] }).expect(200);
+      expect(done.body).toMatchObject({ status: 'HELD', conclusion: 'Thống nhất triển khai trong tháng' });
+      await post(people.head.cookie, `/api/meetings/${pastId}/conclude`, { conclusion: 'Lần hai' }).expect(409);
+      await post(people.head.cookie, `/api/meetings/${pastId}/cancel`, { reason: 'Hủy sau họp' }).expect(409);
+      const detail = (await get(people.staff.cookie, `/api/meetings/${pastId}`).expect(200)).body;
+      expect(detail.attendees.map((a: any) => [a.personId === people.outsider.personId, a.attended]).filter(([o]: any) => o)).toEqual([[true, false]]);
+      expect(detail.actions).toHaveLength(1);
+      expect(detail.can).toMatchObject({ edit: false, manageActions: false });
+      expect((await get(people.head.cookie, `/api/meetings/${pastId}`).expect(200)).body.can).toMatchObject({ manageActions: true, upload: true });
+    });
+
+    it('việc sau họp: chủ trì thêm, sửa, xóa; người thực hiện báo xong; việc của tôi; mở lại chỉ chủ trì', async () => {
+      const due = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+      const mine = (await get(people.staff.cookie, '/api/meetings/my-actions').expect(200)).body;
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toMatchObject({ meetingTitle: 'Họp triển khai kế hoạch quý IV', overdue: false });
+      const actionId = mine[0].action.id as string;
+      await post(people.staff.cookie, `/api/meetings/${pastId}/actions`, { content: 'Tự giao việc', assigneePersonId: people.staff.personId, dueDate: due }).expect(403);
+      const added = await post(people.head.cookie, `/api/meetings/${pastId}/actions`, { content: 'Soạn công văn gửi các phòng', assigneePersonId: people.outsider.personId, dueDate: due }).expect(201);
+      await http().patch(`/api/meetings/${pastId}/actions/${added.body.id}`).set('Cookie', people.head.cookie).send({ dueDate: '2020-01-01' }).expect(400);
+      await http().patch(`/api/meetings/${pastId}/actions/${added.body.id}`).set('Cookie', people.head.cookie).send({ content: 'Soạn công văn gửi các phòng (cập nhật)' }).expect(200);
+      await post(people.outsider.cookie, `/api/meetings/${pastId}/actions/${actionId}/done`).expect(403); // việc của staff
+      const finished = await post(people.staff.cookie, `/api/meetings/${pastId}/actions/${actionId}/done`).expect(200);
+      expect(finished.body).toMatchObject({ status: 'DONE' });
+      await post(people.staff.cookie, `/api/meetings/${pastId}/actions/${actionId}/done`).expect(409);
+      expect((await get(people.staff.cookie, '/api/meetings/my-actions').expect(200)).body).toEqual([]);
+      await post(people.staff.cookie, `/api/meetings/${pastId}/actions/${actionId}/reopen`).expect(403);
+      await post(people.head.cookie, `/api/meetings/${pastId}/actions/${actionId}/reopen`).expect(200);
+      await http().delete(`/api/meetings/${pastId}/actions/${added.body.id}`).set('Cookie', people.head.cookie).expect(204);
+      await http().delete(`/api/meetings/${pastId}/actions/${added.body.id}`).set('Cookie', people.head.cookie).expect(404);
+      const kc = await http().patch(`/api/meetings/${pastId}/conclusion`).set('Cookie', people.head.cookie).send({ conclusion: 'Kết luận đã chỉnh sửa' }).expect(200);
+      expect(kc.body.conclusion).toBe('Kết luận đã chỉnh sửa');
+      await http().patch(`/api/meetings/${pastId}/conclusion`).set('Cookie', people.staff.cookie).send({ conclusion: 'Tự sửa' }).expect(403);
+      await post(people.head.cookie, `/api/meetings/${meetingId}/actions`, { content: 'Việc sớm', assigneePersonId: people.staff.personId, dueDate: due }).expect(409); // chưa họp
+    });
+
+    it('biên bản đính kèm: chủ trì tải lên, người dự tải về, không lộ khóa lưu trữ', async () => {
+      const up = (cookie: string, name: string, data: Buffer) => http().post(`/api/meetings/${pastId}/attachments`).set('Cookie', cookie).attach('file', data, name);
+      await up(people.staff.cookie, 'bien-ban.pdf', Buffer.from('%PDF-1.4 thu')).expect(403);
+      const ok = await up(people.head.cookie, 'biên bản họp.pdf', Buffer.from('%PDF-1.4 thu')).expect(201);
+      expect(ok.body).toMatchObject({ fileName: 'biên bản họp.pdf', contentType: 'application/pdf' });
+      expect(ok.body.storageKey).toBeUndefined();
+      await up(people.head.cookie, 'chuong-trinh.exe', Buffer.from('MZ')).expect(400);
+      await up(people.head.cookie, 'gia.pdf', Buffer.from('khong phai pdf')).expect(400);
+      const file = await binary(people.staff.cookie, `/api/meetings/${pastId}/attachments/${ok.body.id}`).expect(200);
+      expect((file.body as Buffer).toString()).toBe('%PDF-1.4 thu');
+      await binary(sysAdmin.cookie, `/api/meetings/${pastId}/attachments/${ok.body.id}`).expect(403);
+    });
+
+    it('danh mục phòng họp: ai cũng chọn được; chỉ Văn phòng quản lý; chọn phòng thì địa điểm theo tên phòng; cảnh báo trùng phòng', async () => {
+      const rooms = (await get(people.staff.cookie, '/api/meetings/rooms').expect(200)).body;
+      expect(rooms.map((r: any) => r.name)).toEqual(expect.arrayContaining(['Phòng họp số 1', 'Phòng họp số 2', 'Phòng họp trực tuyến'])); // gieo sẵn khi migration
+      await get(sysAdmin.cookie, '/api/meetings/rooms').expect(200);
+      await http().get('/api/meetings/rooms').expect(401);
+      await post(people.head.cookie, '/api/meetings/rooms', { name: 'Phòng của lãnh đạo' }).expect(403);
+      await post(people.boss.cookie, '/api/meetings/rooms', { name: 'Phòng của lãnh đạo' }).expect(403);
+      const name = `Phòng thử ${prefix}`;
+      const created = await post(vanPhong.cookie, '/api/meetings/rooms', { name, capacity: 12, description: 'Tầng 2' }).expect(201);
+      expect(created.body).toMatchObject({ name, capacity: 12, status: 'ACTIVE' });
+      await post(vanPhong.cookie, '/api/meetings/rooms', { name: name.toUpperCase() }).expect(409);
+      await post(vanPhong.cookie, '/api/meetings/rooms', { name: 'A' }).expect(400);
+      await post(vanPhong.cookie, '/api/meetings/rooms', { name: `${name} x`, capacity: 0 }).expect(400);
+      await post(vanPhong.cookie, '/api/meetings/rooms', { name: `${name} y`, khac: 1 }).expect(400);
+      const roomId = created.body.id as string;
+
+      const slot = { startAt: hours(30, T0), endAt: hours(31, T0) };
+      const one = await post(people.head.cookie, '/api/meetings', { title: 'Họp trong phòng thử', ...slot, roomId, location: 'Gõ tay bị bỏ qua', attendees: [] }).expect(201);
+      expect(one.body.meeting).toMatchObject({ roomId, location: name });
+      expect(one.body.roomConflicts).toEqual([]);
+      const two = await post(people.outsider.cookie, '/api/meetings', { title: 'Họp cùng phòng', startAt: hours(30.5, T0), endAt: hours(31.5, T0), roomId, attendees: [] }).expect(201);
+      expect(two.body.roomConflicts).toHaveLength(1);
+      expect(two.body.roomConflicts[0]).toMatchObject({ title: null, meetingId: null }); // outsider không xem được họp của head
+      const check = await post(people.head.cookie, '/api/meetings/check-room', { roomId, ...slot, excludeMeetingId: one.body.meeting.id }).expect(200);
+      expect(check.body).toHaveLength(1);
+      expect(check.body[0].title).toBeNull(); // họp của outsider mà head không được mời
+      await post(people.head.cookie, '/api/meetings/check-room', { roomId: '00000000-0000-4000-8000-000000000000', ...slot }).expect(404);
+      await post(sysAdmin.cookie, '/api/meetings/check-room', { roomId, ...slot }).expect(403);
+      const detail = (await get(people.head.cookie, `/api/meetings/${one.body.meeting.id}`).expect(200)).body;
+      expect(detail.room).toMatchObject({ id: roomId, name, capacity: 12 });
+      expect(detail.roomConflicts).toHaveLength(1);
+
+      // đổi tên phòng không đổi địa điểm đã tạo; ngừng sử dụng thì không chọn được nữa
+      await http().patch(`/api/meetings/rooms/${roomId}`).set('Cookie', vanPhong.cookie).send({ name: `${name} (đổi tên)` }).expect(200);
+      expect((await get(people.head.cookie, `/api/meetings/${one.body.meeting.id}`).expect(200)).body.meeting.location).toBe(name);
+      await http().patch(`/api/meetings/rooms/${roomId}`).set('Cookie', people.head.cookie).send({ status: 'INACTIVE' }).expect(403);
+      await http().patch(`/api/meetings/rooms/${roomId}`).set('Cookie', vanPhong.cookie).send({ status: 'INACTIVE' }).expect(200);
+      expect((await get(people.staff.cookie, '/api/meetings/rooms').expect(200)).body.map((r: any) => r.id)).not.toContain(roomId);
+      expect((await get(vanPhong.cookie, '/api/meetings/rooms?includeInactive=true').expect(200)).body.map((r: any) => r.id)).toContain(roomId);
+      await post(people.head.cookie, '/api/meetings', { title: 'Họp phòng đã ngừng', startAt: hours(50, T0), endAt: hours(51, T0), roomId }).expect(409);
+      // họp đang có phòng đã ngừng vẫn sửa được các trường khác
+      await http().patch(`/api/meetings/${one.body.meeting.id}`).set('Cookie', people.head.cookie).send({ agenda: 'Cập nhật nội dung' }).expect(200);
+      // đổi sang địa điểm tự do
+      const freed = await http().patch(`/api/meetings/${one.body.meeting.id}`).set('Cookie', people.head.cookie).send({ roomId: null, location: 'Hội trường lớn' }).expect(200);
+      expect(freed.body.meeting).toMatchObject({ roomId: null, location: 'Hội trường lớn' });
+      await post(people.outsider.cookie, `/api/meetings/${two.body.meeting.id}/cancel`, { reason: 'Không cần nữa' }).expect(200);
+      await post(people.head.cookie, `/api/meetings/${one.body.meeting.id}/cancel`, { reason: 'Không cần nữa' }).expect(200);
+      const rows = await auditRows(`WHERE action IN ('meeting.room.create', 'meeting.room.update') AND target_id = $1 ORDER BY id`, [roomId]);
+      expect(rows.map((r) => r.action)).toEqual(['meeting.room.create', 'meeting.room.update', 'meeting.room.update']);
+      expect(rows.every((r) => r.module === 'meeting')).toBe(true);
+    });
+
+    it('hủy họp cần lý do; chỉ chủ trì; sau hủy không sửa, không hủy lại; nhật ký có module "meeting"', async () => {
+      await post(people.staff.cookie, `/api/meetings/${meetingId}/cancel`, { reason: 'Hoãn' }).expect(403);
+      await post(people.head.cookie, `/api/meetings/${meetingId}/cancel`, { reason: '' }).expect(400);
+      expect((await post(people.head.cookie, `/api/meetings/${meetingId}/cancel`, { reason: 'Hoãn theo chỉ đạo' }).expect(200)).body).toMatchObject({ status: 'CANCELLED', cancelReason: 'Hoãn theo chỉ đạo' });
+      await post(people.head.cookie, `/api/meetings/${meetingId}/cancel`, { reason: 'Lần hai' }).expect(409);
+      await http().patch(`/api/meetings/${meetingId}`).set('Cookie', people.head.cookie).send({ title: 'Sửa sau hủy' }).expect(409);
+      const rows = await auditRows(`WHERE target_id = ANY($1) ORDER BY id`, [[meetingId, pastId]]);
+      expect(rows.every((r) => r.module === 'meeting')).toBe(true);
+      const actions = rows.map((r) => r.action);
+      expect(actions).toEqual(expect.arrayContaining(['meeting.create', 'meeting.update', 'meeting.respond', 'meeting.cancel', 'meeting.conclude', 'meeting.action.add', 'meeting.action.done', 'meeting.attachment.upload']));
+      expect(rows.find((r) => r.action === 'meeting.respond')).toMatchObject({ type: 'APPROVE' });
+      expect(rows.find((r) => r.action === 'meeting.action.add')).toMatchObject({ type: 'CREATE' });
+      const notices = (await db.query(`SELECT DISTINCT type FROM notification WHERE type LIKE 'MEETING_%'`)).map((n: any) => n.type);
+      expect(notices).toEqual(expect.arrayContaining(['MEETING_INVITED', 'MEETING_CHANGED', 'MEETING_CANCELLED', 'MEETING_RESPONDED', 'MEETING_ACTION_ASSIGNED']));
     });
   });
 

@@ -80,13 +80,18 @@ export interface PositionModel extends InactiveInfo {
   level: number;
   /** Giữ vị trí này là cán bộ lãnh đạo, quản lý: KPI chia 6 và chấm thêm ba tiêu chí d, đ, e (ADR-022). */
   isLeader: boolean;
+  /**
+   * Vị trí của người lao động làm công tác hỗ trợ, phục vụ (lái xe, phục vụ, lễ tân, bảo vệ...): kết quả chấm theo ba tiêu chí
+   * chất lượng, tuân thủ quy trình, hiệu quả thay cho công thức sản phẩm (Sổ tay Bộ Nội vụ Chương III, ADR-053). Không đồng thời là lãnh đạo.
+   */
+  isSupport: boolean;
   reportsToPositionId: string | null;
   duties: string | null;
   /** KPI/OKR then chốt nhập từ Excel, chỉ để tham khảo, chưa là tiêu chí chấm điểm (ADR-012). */
   referenceOkr: string | null;
 }
-/** Không nêu `isLeader` thì lấy theo cấp (`defaultIsLeader`). */
-export type NewPosition = Omit<PositionModel, 'id' | 'isLeader' | keyof InactiveInfo> & { isLeader?: boolean };
+/** Không nêu `isLeader` thì lấy theo cấp (`defaultIsLeader`); vị trí hỗ trợ, phục vụ thì không là lãnh đạo. Không nêu `isSupport` là false. */
+export type NewPosition = Omit<PositionModel, 'id' | 'isLeader' | 'isSupport' | keyof InactiveInfo> & { isLeader?: boolean; isSupport?: boolean };
 export type PositionPatch = Partial<Omit<PositionModel, 'id' | 'code' | keyof InactiveInfo>>;
 
 /** PRIMARY: vị trí chính (mỗi cán bộ tối đa một tại mỗi thời điểm). CONCURRENT: kiêm nhiệm, được có nhiều cùng lúc (ADR-047). */

@@ -2,12 +2,15 @@ import { BadRequestException, ConflictException, ForbiddenException, NotFoundExc
 import {
   actorOf,
   buildEvaluation,
+  documentCriteria,
+  marksFor,
   PEOPLE,
   seedPlanned,
   seedReviewed,
   seedSelfSubmitted,
 } from './testing/in-memory.js';
 import type { Harness } from './testing/in-memory.js';
+import { LEADER_SET, STAFF_SET } from './general-criteria.js';
 
 describe('EvaluationService: kỳ đánh giá', () => {
   let h: Harness;
@@ -446,6 +449,17 @@ describe('EvaluationService: tạo hồ sơ từ việc được giao (ADR-016)'
     expect(h.audit.at(-1)).toMatchObject({ action: 'evaluation.generate', details: { created: 1, refreshed: 0, skipped: 0 } });
   });
 
+  it('số lần được miễn trừ do nguyên nhân khách quan được cộng riêng vào dòng, không lẫn vào số lần bị trừ', async () => {
+    const period = await quarter(h);
+    h.work.items = [
+      work({ assignmentId: 'as-1', plannedQuantity: 10, confirmedQuantity: 10, lateCount: 1, waivedLateCount: 2 }),
+      work({ assignmentId: 'as-2', plannedQuantity: 5, confirmedQuantity: 5, waivedReworkCount: 1 }),
+    ];
+    await h.service.generateFromWork(actorOf('other', 'vanphong'), period.id);
+    const evaluation = ((await h.repos.evaluations.findByPersonInPeriod(period.id, PEOPLE.staff))[0])!;
+    expect((await h.repos.tasks.findByEvaluation(evaluation.id))[0]).toMatchObject({ lateCount: 1, reworkCount: 0, waivedLateCount: 2, waivedReworkCount: 1 });
+  });
+
   it('làm lại cho kết quả như nhau, làm mới số liệu, bỏ dòng có nguồn đã hết việc, giữ dòng nhập tay', async () => {
     const period = await quarter(h);
     const evaluation = await h.service.createEvaluation(actorOf('head'), period.id, PEOPLE.staff);
@@ -631,6 +645,184 @@ describe('EvaluationService: tiêu chí lãnh đạo, chỉ đạo (D) của cá
     const period = await h.repos.periods.findById(staffEval.period.id);
     const headEval = await h.repos.evaluations.create({ periodId: period!.id, personId: PEOPLE.head, positionId: 'pos-head', createdBy: null });
     expect((await h.service.getEvaluation(actorOf('deputy'), headEval.id, false)).isLeader).toBe(false);
+  });
+});
+
+describe('EvaluationService: người lao động hỗ trợ, phục vụ (Sổ tay Bộ Nội vụ Chương III, ADR-053)', () => {
+  let h: Harness;
+  const S = { quality: 100, compliance: 90, efficiency: 80 };
+  beforeEach(async () => {
+    h = await buildEvaluation();
+    h.org.positions.set(PEOPLE.staff, { positionId: 'pos-staff', level: 5, isLeader: false, isSupport: true });
+  });
+
+  async function supportPlanned() {
+    const period = await h.service.createPeriod(actorOf('head'), { type: 'MONTH', year: 2026, number: 9 });
+    const evaluation = await h.service.createEvaluation(actorOf('head'), period.id, PEOPLE.staff);
+    return { period, evaluation };
+  }
+
+  it('tự đánh giá ba tiêu chí, không cần chỉ tiêu; thiếu hoặc sai khoảng thì bị từ chối', async () => {
+    const { evaluation } = await supportPlanned();
+    await expect(h.service.selfSubmit(actorOf('staff'), evaluation.id, { generalScore: 27 })).rejects.toThrow(/Người lao động cần chấm ba tiêu chí/);
+    await expect(h.service.selfSubmit(actorOf('staff'), evaluation.id, { generalScore: 27, support: { ...S, quality: 120 } })).rejects.toBeInstanceOf(BadRequestException);
+    const submitted = await h.service.selfSubmit(actorOf('staff'), evaluation.id, { generalScore: 27, support: S, comment: 'Tự đánh giá' });
+    expect(submitted).toMatchObject({ status: 'SELF_SUBMITTED', selfGeneralScore: 27, selfSupport: S });
+    const view = await h.service.getEvaluation(actorOf('head'), evaluation.id, false);
+    // tạm tính theo điểm tự đánh giá: (100 + 90 + 80) / 3 = 90% → 63; tổng 27 + 63 = 90
+    expect(view).toMatchObject({ isSupport: true, isLeader: false, preview: { resultScore: 63, totalScore: 90, rating: 'XUAT_SAC', complete: true } });
+    expect(view.warnings.join('|')).not.toMatch(/Chưa hoàn thành đủ số lượng/);
+  });
+
+  it('người quản lý chấm ba tiêu chí: điểm kết quả = (a + b + c) / 3 × 70, lưu chính sách cùng hồ sơ, có nhật ký', async () => {
+    const { evaluation } = await supportPlanned();
+    await h.service.selfSubmit(actorOf('staff'), evaluation.id, { generalScore: 27, support: S });
+    await expect(h.service.review(actorOf('head'), evaluation.id, { generalScore: 26 })).rejects.toThrow(/Người quản lý cần chấm ba tiêu chí/);
+    await expect(h.service.review(actorOf('head'), evaluation.id, { generalScore: 26, support: S, leadership: { unitResult: 1, organizing: 1, solidarity: 1 } })).rejects.toBeInstanceOf(BadRequestException);
+
+    const view = await h.service.review(actorOf('head'), evaluation.id, { generalScore: 26, support: { quality: 90, compliance: 80, efficiency: 70 } });
+    // (90 + 80 + 70) / 3 = 80% → 56; tổng 26 + 56 = 82
+    expect(view.evaluation).toMatchObject({ status: 'REVIEWED', resultScore: 56, totalScore: 82, rating: 'HOAN_THANH_TOT', support: { quality: 90, compliance: 80, efficiency: 70 }, selfSupport: S });
+    expect(view.evaluation.scoringParams).toMatchObject({ policy: 'support-v1-sotay-bnv', rate: 0.8 });
+    expect(h.audit.find((a) => a.action === 'evaluation.review')?.details).toMatchObject({ policy: 'support-v1-sotay-bnv', resultScore: 56 });
+
+    await h.service.returnEvaluation(actorOf('deputy'), evaluation.id, 'Chấm lại tiêu chí hiệu quả');
+    expect(await h.repos.evaluations.findById(evaluation.id)).toMatchObject({ support: null, selfSupport: S, resultScore: null });
+  });
+
+  it('vị trí khác không được gửi ba tiêu chí; vị trí hỗ trợ không có giải thích điểm theo dòng việc', async () => {
+    const other = await buildEvaluation(); // chuyên viên thường
+    const staffCase = await seedSelfSubmitted(other);
+    await expect(
+      other.service.review(actorOf('head'), staffCase.evaluation.id, { generalScore: 25, support: S, tasks: [{ taskId: staffCase.t1.id, qualityLevel: 1 }, { taskId: staffCase.t2.id, qualityLevel: 1 }] }),
+    ).rejects.toThrow(/chỉ áp dụng cho vị trí hỗ trợ, phục vụ/);
+
+    const { evaluation } = await supportPlanned();
+    const insight = await h.service.getInsight(actorOf('head'), evaluation.id, false);
+    expect(insight).toMatchObject({ supported: false, reason: expect.stringMatching(/Sổ tay Bộ Nội vụ Chương III/) });
+  });
+});
+
+describe('EvaluationService: tiêu chí chung chấm theo mục con (ADR-054)', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await buildEvaluation();
+    await h.criteria.create(documentCriteria('2026-01-01'));
+  });
+
+  /** Hồ sơ quý III của staff có hai dòng đã làm đủ, chưa tự chấm. */
+  async function staffReady() {
+    const { period, evaluation } = await seedPlanned(h);
+    const t1 = await h.service.addTask(actorOf('head'), evaluation.id, { catalogItemCode: 'B.009', plannedQuantity: 10 });
+    await h.service.recordResult(actorOf('staff'), t1.id, { completedQuantity: 10 });
+    return { period, evaluation, tasks: [{ taskId: t1.id, qualityLevel: 1 }] };
+  }
+
+  it('có bảng áp dụng thì phải chấm từng mục; không nhận một điểm; Không đảm bảo phải có căn cứ', async () => {
+    const { evaluation } = await staffReady();
+    await expect(h.service.selfSubmit(actorOf('staff'), evaluation.id, { generalScore: 25 })).rejects.toThrow(/theo từng mục/);
+    await expect(h.service.selfSubmit(actorOf('staff'), evaluation.id, {})).rejects.toThrow(/Cá nhân cần chấm từng mục/);
+    const noNote = marksFor('STAFF').map((m) => (m.code === 'I.2' ? { code: 'I.2', ok: false } : m));
+    await expect(h.service.selfSubmit(actorOf('staff'), evaluation.id, { general: noNote })).rejects.toThrow(/I.2 Không đảm bảo: cần ghi căn cứ/);
+
+    const submitted = await h.service.selfSubmit(actorOf('staff'), evaluation.id, { general: marksFor('STAFF', ['III.1']) });
+    expect(submitted).toMatchObject({ selfGeneralScore: 27.5, selfGeneral: { group: 'STAFF', versionId: h.criteria.rows[0].id } });
+    const view = await h.service.getEvaluation(actorOf('head'), evaluation.id, false);
+    expect(view.generalCriteria).toMatchObject({ group: 'STAFF', effectiveFrom: '2026-01-01' });
+    expect(view.generalCriteria?.items).toHaveLength(10);
+  });
+
+  it('người thẩm định chấm lại; khác tự chấm phải ghi căn cứ; trả lại hồ sơ thì xóa phần của người thẩm định', async () => {
+    const { evaluation, tasks } = await staffReady();
+    await h.service.selfSubmit(actorOf('staff'), evaluation.id, { general: marksFor('STAFF') });
+    const lower = marksFor('STAFF').map((m) => (m.code === 'I.2' ? { code: 'I.2', ok: false, note: null } : m));
+    await expect(h.service.review(actorOf('head'), evaluation.id, { general: lower, tasks })).rejects.toThrow(/I.2 Không đảm bảo/);
+
+    const view = await h.service.review(actorOf('head'), evaluation.id, { general: marksFor('STAFF', ['I.2']), tasks });
+    expect(view.evaluation).toMatchObject({ generalScore: 25, resultScore: 70, totalScore: 95, general: { group: 'STAFF' } });
+    expect(view.evaluation.general?.items.find((m) => m.code === 'I.2')).toEqual({ code: 'I.2', ok: false, note: 'Hạn chế ở mục I.2' });
+    expect(h.audit.find((a) => a.action === 'evaluation.review')?.details).toMatchObject({ generalScore: 25, general: { group: 'STAFF' } });
+
+    await h.service.returnEvaluation(actorOf('deputy'), evaluation.id, 'Xem lại mục kỷ luật');
+    expect(await h.repos.evaluations.findById(evaluation.id)).toMatchObject({ general: null, generalScore: null, selfGeneral: { group: 'STAFF' } });
+  });
+
+  it('vị trí lãnh đạo chấm theo bảng của 05-HD/TU Phụ lục 03', async () => {
+    const period = await h.service.createPeriod(actorOf('boss'), { type: 'QUARTER', year: 2026, number: 3 });
+    const evaluation = await h.service.createEvaluation(actorOf('boss'), period.id, PEOPLE.deputy);
+    const task = await h.service.addTask(actorOf('boss'), evaluation.id, { catalogItemCode: 'B.009', plannedQuantity: 4 });
+    await h.service.recordResult(actorOf('deputy'), task.id, { completedQuantity: 4 });
+    await expect(h.service.selfSubmit(actorOf('deputy'), evaluation.id, { general: marksFor('STAFF') })).rejects.toThrow(/I.1 không có/);
+    const submitted = await h.service.selfSubmit(actorOf('deputy'), evaluation.id, { general: marksFor('LEADER', ['1.7', '2.2']) });
+    expect(submitted).toMatchObject({ selfGeneralScore: 27, selfGeneral: { group: 'LEADER' } });
+    expect((await h.service.getEvaluation(actorOf('boss'), evaluation.id, false)).generalCriteria).toMatchObject({ group: 'LEADER', groupLabel: expect.stringMatching(/lãnh đạo/) });
+  });
+
+  it('kỳ trước ngày áp dụng của phiên bản đầu tiên vẫn chấm một điểm 0–30 như cũ', async () => {
+    h.criteria.rows[0].effectiveFrom = '2027-01-01';
+    const { evaluation } = await staffReady();
+    await expect(h.service.selfSubmit(actorOf('staff'), evaluation.id, { general: marksFor('STAFF') })).rejects.toThrow(/chưa có bảng tiêu chí chung/);
+    expect(await h.service.selfSubmit(actorOf('staff'), evaluation.id, { generalScore: 26 })).toMatchObject({ selfGeneralScore: 26, selfGeneral: null });
+    expect((await h.service.getEvaluation(actorOf('head'), evaluation.id, false)).generalCriteria).toBeNull();
+  });
+
+  it('hồ sơ kỳ sau hiện hạn chế người thẩm định đã nêu ở kỳ cùng loại liền trước', async () => {
+    const q2 = await h.service.createPeriod(actorOf('head'), { type: 'QUARTER', year: 2026, number: 2 });
+    const prev = await h.service.createEvaluation(actorOf('head'), q2.id, PEOPLE.staff);
+    const t = await h.service.addTask(actorOf('head'), prev.id, { catalogItemCode: 'B.009', plannedQuantity: 1 });
+    await h.service.recordResult(actorOf('staff'), t.id, { completedQuantity: 1 });
+    await h.service.selfSubmit(actorOf('staff'), prev.id, { general: marksFor('STAFF') });
+    await h.service.review(actorOf('head'), prev.id, {
+      general: marksFor('STAFF').map((m) => (m.code === 'II.3' ? { code: 'II.3', ok: false, note: 'Chậm nộp báo cáo tháng 5' } : m)),
+      tasks: [{ taskId: t.id, qualityLevel: 1 }],
+      comment: 'Cần chủ động hơn',
+    });
+
+    const { evaluation } = await staffReady();
+    const view = await h.service.getEvaluation(actorOf('head'), evaluation.id, false);
+    expect(view.previous).toEqual({
+      periodLabel: '2026-Q2',
+      reviewComment: 'Cần chủ động hơn',
+      limitations: [{ code: 'II.3', name: 'Tinh thần trách nhiệm trong thực thi công vụ', note: 'Chậm nộp báo cáo tháng 5' }],
+    });
+  });
+});
+
+describe('GeneralCriteriaService: phiên bản bảng tiêu chí chung (ADR-054)', () => {
+  let h: Harness;
+  const input = (effectiveFrom: string) => ({ effectiveFrom, leader: LEADER_SET, staff: STAFF_SET, note: 'Theo văn bản' });
+  beforeEach(async () => {
+    h = await buildEvaluation();
+  });
+
+  it('thêm phiên bản: kiểm tra tháng, bảng, trùng ngày; có nhật ký', async () => {
+    await expect(h.criteriaService.create(actorOf('head'), input('2026-13'))).rejects.toBeInstanceOf(BadRequestException);
+    await expect(h.criteriaService.create(actorOf('head'), { ...input('2026-11'), staff: { ...STAFF_SET, items: STAFF_SET.items.slice(1) } })).rejects.toThrow(/phải đúng 30/);
+    const created = await h.criteriaService.create(actorOf('head'), input('2026-11'));
+    expect(created).toMatchObject({ effectiveFrom: '2026-11-01', note: 'Theo văn bản' });
+    await expect(h.criteriaService.create(actorOf('head'), input('2026-11'))).rejects.toBeInstanceOf(ConflictException);
+    expect(h.audit.find((a) => a.action === 'evaluation.general-criteria.create')?.details).toMatchObject({ effectiveFrom: '2026-11-01', leaderItems: 17, staffItems: 10 });
+  });
+
+  it('không áp dụng từ tháng mà kỳ từ đó trở đi đã có người tự chấm; phiên bản đã dùng không xóa được', async () => {
+    const first = await h.criteriaService.create(actorOf('head'), input('2026-01'));
+    // quý III/2026 đã tự chấm theo phiên bản đầu
+    const { evaluation } = await seedPlanned(h);
+    const t = await h.service.addTask(actorOf('head'), evaluation.id, { catalogItemCode: 'B.009', plannedQuantity: 1 });
+    await h.service.recordResult(actorOf('staff'), t.id, { completedQuantity: 1 });
+    await h.service.selfSubmit(actorOf('staff'), evaluation.id, { general: marksFor('STAFF') });
+    await expect(h.criteriaService.create(actorOf('head'), input('2026-07'))).rejects.toThrow(/2026-Q3 đã có người tự chấm/);
+    const later = await h.criteriaService.create(actorOf('head'), input('2026-10'));
+
+    const list = await h.criteriaService.list();
+    expect(list.map((v) => [v.effectiveFrom, v.effectiveTo, v.usedBy])).toEqual([
+      ['2026-10-01', null, []],
+      ['2026-01-01', '2026-09-30', ['2026-Q3']],
+    ]);
+    await expect(h.criteriaService.remove(actorOf('head'), first.id)).rejects.toThrow(/không xóa được/);
+    await h.criteriaService.remove(actorOf('head'), later.id);
+    expect(h.criteria.rows).toHaveLength(1);
+    expect(h.audit.some((a) => a.action === 'evaluation.general-criteria.delete')).toBe(true);
   });
 });
 

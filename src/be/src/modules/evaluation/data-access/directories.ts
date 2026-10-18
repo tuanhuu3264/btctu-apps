@@ -1,16 +1,17 @@
-import { AD_HOC_COEFFICIENTS, AD_HOC_LEVELS, adHocCode, adHocLabel } from '../../../common/ad-hoc.js';
+import { AD_HOC_COEFFICIENTS, AD_HOC_LEVELS, adHocCode, adHocLabel, isAdHocCode } from '../../../common/ad-hoc.js';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { CatalogService } from '../../catalog/index.js';
 import { OrgQueryService } from '../../organization/index.js';
 import { classifyByScore } from '../../scoring/index.js';
-import { CatalogDirectory, HeadedUnitRatingSource, OrgDirectory } from '../application/evaluation.ports.js';
+import { CatalogDirectory, HeadedUnitRatingSource, OrgDirectory, PeriodWorkSource, UnitCompletionSource } from '../application/evaluation.ports.js';
+import { computeMetrics } from '../application/unit-evaluation.rules.js';
 import type { HeadedUnitRating } from '../application/evaluation.ports.js';
 import type { UnitInfo } from '../application/unit-evaluation.model.js';
 import { UnitDirectory, UnitEvaluationRepository } from '../application/unit-evaluation.ports.js';
 import type { CatalogVersionInfo, Placement, PositionInfo, Superior } from '../application/evaluation.ports.js';
 import type { PositionModel } from '../../organization/index.js';
 
-const toInfo = (p: PositionModel): PositionInfo => ({ positionId: p.id, unitId: p.unitId, level: p.level, isLeader: p.isLeader });
+const toInfo = (p: PositionModel): PositionInfo => ({ positionId: p.id, unitId: p.unitId, level: p.level, isLeader: p.isLeader, isSupport: p.isSupport });
 
 /** Adapter sang mô-đun organization: dùng giao diện công khai của mô-đun đó, không đụng bảng của nó. */
 @Injectable()
@@ -99,6 +100,43 @@ export class OrganizationUnitDirectoryAdapter extends UnitDirectory {
         memberPersonIds: [...new Set(u.positions.flatMap((p) => (p.holder ? [p.holder.personId] : [])))],
       };
     });
+  }
+}
+
+/**
+ * Việc được giao trong kỳ của đơn vị chứa vị trí và các đơn vị cấp dưới (đơn vị phụ trách của lãnh đạo: Trưởng, Phó phòng là phòng;
+ * Trưởng, Phó Trưởng ban là cả Ban; giả định ghi ở GAP). Việc đột xuất không tính, như số liệu tham chiếu của tập thể (ADR-030).
+ */
+@Injectable()
+export class UnitCompletionAdapter extends UnitCompletionSource {
+  constructor(
+    private readonly units: UnitDirectory,
+    private readonly org: OrgDirectory,
+    private readonly work: PeriodWorkSource,
+  ) {
+    super();
+  }
+
+  async of(positionId: string, period: { type: 'MONTH' | 'QUARTER' | 'YEAR'; startDate: string; endDate: string }) {
+    const unitId = (await this.org.positionInfo(positionId))?.unitId;
+    if (!unitId) return null;
+    const all = await this.units.units();
+    const unit = all.find((u) => u.id === unitId);
+    if (!unit) return null;
+    const scope = new Set([unit.id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const u of all) {
+        if (u.parentId && scope.has(u.parentId) && !scope.has(u.id)) {
+          scope.add(u.id);
+          grew = true;
+        }
+      }
+    }
+    const members = new Set(all.filter((u) => scope.has(u.id)).flatMap((u) => u.memberPersonIds));
+    const metrics = computeMetrics((await this.work.collect(period)).filter((w) => members.has(w.personId) && !isAdHocCode(w.catalogItemCode)));
+    return { unitName: unit.name, works: metrics.works, completed: metrics.completed };
   }
 }
 

@@ -128,6 +128,19 @@ describe('PositionService: cờ lãnh đạo, quản lý và xóa vị trí (ADR
     expect(created.isLeader).toBe(true);
   });
 
+  it('vị trí hỗ trợ, phục vụ (ADR-053): mặc định không; bật thì không là lãnh đạo; không đồng thời là lãnh đạo', async () => {
+    const { ban, l1, l3, l5 } = await seedChain(org);
+    expect(l5.isSupport).toBe(false);
+    const base = { unitId: ban.id, level: 5, reportsToPositionId: l1.id, duties: null, referenceOkr: null };
+    const driver = await org.positions.create({ ...base, code: 'X-LAI-XE', title: 'Lái xe', isSupport: true });
+    expect(driver).toMatchObject({ isSupport: true, isLeader: false });
+    expect(org.audit.at(-1)?.details).toMatchObject({ isSupport: true });
+    await expect(org.positions.create({ ...base, code: 'X-SAI', title: 'Sai', isSupport: true, isLeader: true })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(org.positions.update(l3.id, { isSupport: true })).rejects.toThrow(/không đồng thời là vị trí lãnh đạo/); // cấp 3 đang là lãnh đạo
+    expect(await org.positions.update(l5.id, { isSupport: true })).toMatchObject({ isSupport: true });
+    await expect(org.positions.update(l5.id, { isLeader: true })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('ngừng vị trí (xóa mềm): còn cấp dưới hoạt động hoặc còn người giữ thì từ chối; ghi nhật ký; kích hoạt lại được', async () => {
     const { l1, l5 } = await seedChain(org);
     await expect(org.positions.deactivate(l1.id)).rejects.toBeInstanceOf(ConflictException); // còn cấp dưới

@@ -85,6 +85,9 @@ export class JobPositionEntity {
   @Column({ name: 'is_leader', type: 'boolean', default: false })
   isLeader: boolean;
 
+  @Column({ name: 'is_support', type: 'boolean', default: false })
+  isSupport: boolean;
+
   @Column({ name: 'reports_to_position_id', type: 'uuid', nullable: true })
   reportsToPositionId: string | null;
 

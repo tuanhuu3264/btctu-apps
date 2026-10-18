@@ -82,6 +82,9 @@ export class WorkAssignmentEntity {
   @Column({ name: 'position_id', type: 'uuid', nullable: true })
   positionId: string | null;
 
+  @Column({ name: 'project_id', type: 'uuid', nullable: true })
+  projectId: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
@@ -126,6 +129,36 @@ export class WorkProgressEntity {
 
   @Column({ name: 'major_error', type: 'boolean', default: true })
   majorError: boolean;
+}
+
+@Entity('work_progress_waiver')
+export class WorkProgressWaiverEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'progress_id', type: 'uuid' })
+  progressId: string;
+
+  @Column({ type: 'varchar', length: 10 })
+  kind: 'LATE' | 'REWORK';
+
+  @Column({ type: 'text' })
+  reason: string;
+
+  @Column({ name: 'granted_by', type: 'uuid' })
+  grantedBy: string;
+
+  @Column({ name: 'granted_at', type: 'timestamptz' })
+  grantedAt: Date;
+
+  @Column({ name: 'revoked_by', type: 'uuid', nullable: true })
+  revokedBy: string | null;
+
+  @Column({ name: 'revoked_at', type: 'timestamptz', nullable: true })
+  revokedAt: Date | null;
+
+  @Column({ name: 'revoke_note', type: 'text', nullable: true })
+  revokeNote: string | null;
 }
 
 @Entity('work_assignment_consultant')

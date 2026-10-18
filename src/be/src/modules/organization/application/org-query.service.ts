@@ -13,6 +13,7 @@ export interface OrgTreePosition {
   title: string;
   level: number;
   isLeader: boolean;
+  isSupport: boolean;
   reportsToPositionId: string | null;
   status: 'ACTIVE' | 'INACTIVE';
   inactiveReason: string | null;
@@ -31,6 +32,7 @@ export interface OrgSuperior {
 export interface OrgLookupData {
   persons: Map<string, { fullName: string }>;
   positions: Map<string, { title: string; level: number; unitCode: string; unitName: string }>;
+  units: Map<string, { code: string; name: string }>;
 }
 
 export interface OrgTreeUnit {
@@ -151,6 +153,7 @@ export class OrgQueryService {
     const unitById = new Map(units.map((u) => [u.id, u]));
     return {
       persons: new Map(persons.map((p) => [p.id, { fullName: p.fullName }])),
+      units: new Map(units.map((u) => [u.id, { code: u.code, name: u.name }])),
       positions: new Map(
         positions.map((p) => {
           const unit = unitById.get(p.unitId);
@@ -192,6 +195,7 @@ export class OrgQueryService {
             title: p.title,
             level: p.level,
             isLeader: p.isLeader,
+            isSupport: p.isSupport,
             reportsToPositionId: p.reportsToPositionId,
             status: p.status,
             inactiveReason: p.inactiveReason,

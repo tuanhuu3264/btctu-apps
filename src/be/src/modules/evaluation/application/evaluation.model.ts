@@ -1,5 +1,7 @@
 import type { Rating } from '../../scoring/index.js';
 import type { Leadership } from './scoring-policy.js';
+import type { SupportScores } from './support-criteria.js';
+import type { GeneralMarks } from './general-criteria.js';
 
 export type PeriodType = 'MONTH' | 'QUARTER' | 'YEAR';
 export type PeriodStatus = 'OPEN' | 'CLOSED';
@@ -56,6 +58,16 @@ export interface EvaluationModel {
   scoringParams: Record<string, unknown> | null;
   /** Ba tiêu chí lãnh đạo, chỉ đạo (D) do người thẩm định chấm; null với cán bộ không lãnh đạo, quản lý. */
   leadership: Leadership | null;
+  /** Vị trí hỗ trợ, phục vụ (ADR-053): ba tiêu chí người lao động tự đánh giá; null với vị trí khác. */
+  selfSupport: SupportScores | null;
+  /** Ba tiêu chí do người quản lý (người thẩm định) đánh giá; là căn cứ tính điểm kết quả. */
+  support: SupportScores | null;
+  /**
+   * Tiêu chí chung chấm theo mục con (ADR-054): của cá nhân tự chấm và của người thẩm định. null với kỳ năm, và với kỳ chưa có
+   * bảng tiêu chí áp dụng (khi đó chỉ có điểm một ô `selfGeneralScore`, `generalScore`).
+   */
+  selfGeneral: GeneralMarks | null;
+  general: GeneralMarks | null;
   createdBy: string | null;
 }
 export type NewEvaluation = Pick<EvaluationModel, 'periodId' | 'personId' | 'positionId' | 'createdBy'>;
@@ -77,11 +89,14 @@ export interface TaskModel {
   /** Số lần chậm tiến độ và số lần chưa đạt, lấy từ các việc nguồn; chuẩn bị cho B và C của Phụ lục 2 (G-02). */
   lateCount: number;
   reworkCount: number;
+  /** Số lần đã được miễn trừ do nguyên nhân khách quan (chỉ để hiển thị; đã loại khỏi hai số trên). */
+  waivedLateCount: number;
+  waivedReworkCount: number;
 }
 export type NewTask = Pick<TaskModel, 'evaluationId' | 'catalogItemCode' | 'plannedQuantity'> &
-  Partial<Pick<TaskModel, 'completedQuantity' | 'evidence' | 'sourceAssignmentIds' | 'sourceTaskTitles' | 'lateCount' | 'reworkCount'>>;
+  Partial<Pick<TaskModel, 'completedQuantity' | 'evidence' | 'sourceAssignmentIds' | 'sourceTaskTitles' | 'lateCount' | 'reworkCount' | 'waivedLateCount' | 'waivedReworkCount'>>;
 export type TaskPatch = Partial<
-  Pick<TaskModel, 'plannedQuantity' | 'completedQuantity' | 'qualityLevel' | 'evidence' | 'sourceAssignmentIds' | 'sourceTaskTitles' | 'lateCount' | 'reworkCount'>
+  Pick<TaskModel, 'plannedQuantity' | 'completedQuantity' | 'qualityLevel' | 'evidence' | 'sourceAssignmentIds' | 'sourceTaskTitles' | 'lateCount' | 'reworkCount' | 'waivedLateCount' | 'waivedReworkCount'>
 >;
 
 export const QUALITY_LEVELS: readonly number[] = [1, 2, 3];

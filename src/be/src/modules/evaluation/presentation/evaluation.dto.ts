@@ -59,11 +59,52 @@ export class RecordResultDto {
   evidence?: string;
 }
 
+/** Ba tiêu chí của vị trí hỗ trợ, phục vụ (ADR-053), mỗi tiêu chí 0–100%; lớp nghiệp vụ kiểm khoảng giá trị. */
+export class SupportScoresDto {
+  @IsNumber()
+  quality: number;
+
+  @IsNumber()
+  compliance: number;
+
+  @IsNumber()
+  efficiency: number;
+}
+
+/** Kết quả chấm một mục tiêu chí chung (ADR-054); lớp nghiệp vụ kiểm mã mục và căn cứ. */
+export class GeneralMarkDto {
+  @IsString()
+  @MaxLength(10)
+  code: string;
+
+  @IsBoolean()
+  ok: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string | null;
+}
+
 export class SelfSubmitDto {
-  /** Bắt buộc với kỳ tháng, quý; kỳ năm không tự chấm điểm (ADR-035). */
+  /** Kỳ tháng, quý chưa có bảng tiêu chí chung: điểm một ô 0–30. Kỳ năm không tự chấm điểm (ADR-035). */
   @IsOptional()
   @IsNumber()
   generalScore?: number;
+
+  /** Kỳ tháng, quý có bảng tiêu chí chung: chấm từng mục (ADR-054). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(40)
+  @ValidateNested({ each: true })
+  @Type(() => GeneralMarkDto)
+  general?: GeneralMarkDto[];
+
+  /** Bắt buộc với vị trí hỗ trợ, phục vụ ở kỳ tháng, quý. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SupportScoresDto)
+  support?: SupportScoresDto;
 
   @IsOptional()
   @IsString()
@@ -97,15 +138,29 @@ export class LeadershipDto {
 }
 
 export class ReviewDto {
-  /** Bắt buộc với kỳ tháng, quý; kỳ năm là trung bình các tháng nên bỏ qua (ADR-035). */
+  /** Kỳ tháng, quý chưa có bảng tiêu chí chung: điểm một ô 0–30. Kỳ năm là trung bình các tháng nên bỏ qua (ADR-035). */
   @IsOptional()
   @IsNumber()
   generalScore?: number;
+
+  /** Kỳ tháng, quý có bảng tiêu chí chung: chấm từng mục (ADR-054). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(40)
+  @ValidateNested({ each: true })
+  @Type(() => GeneralMarkDto)
+  general?: GeneralMarkDto[];
 
   @IsOptional()
   @ValidateNested()
   @Type(() => LeadershipDto)
   leadership?: LeadershipDto;
+
+  /** Bắt buộc với vị trí hỗ trợ, phục vụ; không gửi với vị trí khác. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SupportScoresDto)
+  support?: SupportScoresDto;
 
   @IsOptional()
   @IsString()
@@ -127,11 +182,56 @@ export class ReturnDto {
   reason: string;
 }
 
+/** Ngoại lệ khi hồ sơ năm có điều kiện "Không hoàn thành nhiệm vụ" (ADR-055). */
+export class ConditionExceptionDto {
+  @IsIn(['TU_GIAC_KHAC_PHUC', 'DA_TINH_NAM_TRUOC', 'VI_PHAM_DON_VI_CU', 'BAT_KHA_KHANG', 'KHONG_THE_BIET'])
+  code: 'TU_GIAC_KHAC_PHUC' | 'DA_TINH_NAM_TRUOC' | 'VI_PHAM_DON_VI_CU' | 'BAT_KHA_KHANG' | 'KHONG_THE_BIET';
+
+  @IsString()
+  @MaxLength(2000)
+  note: string;
+}
+
 export class ApproveEvaluationDto {
   @IsOptional()
   @IsString()
   @MaxLength(2000)
   comment?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ConditionExceptionDto)
+  exception?: ConditionExceptionDto;
+}
+
+/** Ghi nhận kỷ luật, kết luận, kết quả lấy phiếu ảnh hưởng xếp loại (ADR-055); lớp nghiệp vụ kiểm các trường theo loại. */
+export class CreateRatingEventDto {
+  @IsIn(['KY_LUAT', 'SUY_THOAI', 'TIN_NHIEM_THAP', 'THAM_NHUNG_PHAM_VI'])
+  kind: 'KY_LUAT' | 'SUY_THOAI' | 'TIN_NHIEM_THAP' | 'THAM_NHUNG_PHAM_VI';
+
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'effectiveDate có dạng YYYY-MM-DD' })
+  effectiveDate: string;
+
+  @IsString()
+  @MaxLength(100)
+  decisionNo: string;
+
+  @IsOptional()
+  @IsIn(['KHIEN_TRACH', 'CANH_CAO', 'HA_BAC_LUONG', 'GIANG_CHUC', 'CACH_CHUC', 'BUOC_THOI_VIEC', 'KHAI_TRU'])
+  form?: 'KHIEN_TRACH' | 'CANH_CAO' | 'HA_BAC_LUONG' | 'GIANG_CHUC' | 'CACH_CHUC' | 'BUOC_THOI_VIEC' | 'KHAI_TRU';
+
+  @IsOptional()
+  @IsIn(['DANG', 'HANH_CHINH'])
+  system?: 'DANG' | 'HANH_CHINH';
+
+  @IsOptional()
+  @IsIn(['CONG_VU', 'SUY_THOAI', 'KHAC'])
+  reason?: 'CONG_VU' | 'SUY_THOAI' | 'KHAC';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  note?: string;
 }
 
 /** Điểm một trục của hồ sơ tập thể (ADR-036). */
@@ -198,6 +298,11 @@ export class AxisDefinitionDto {
 }
 
 export class ReplaceAxesDto {
+  /** Đơn vị có bộ trục riêng (ADR-052); bỏ trống hoặc null là bộ mặc định. */
+  @IsOptional()
+  @IsUUID()
+  unitId?: string | null;
+
   @IsArray()
   @ArrayMaxSize(30)
   @ValidateNested({ each: true })
@@ -272,4 +377,99 @@ export class NotRatedDto {
   @IsString()
   @MaxLength(1000)
   comment?: string;
+}
+
+export class SimulateTaskDto {
+  @IsUUID()
+  taskId: string;
+
+  @IsOptional()
+  @IsInt()
+  completedQuantity?: number;
+
+  @IsOptional()
+  @IsInt()
+  lateCount?: number;
+
+  @IsOptional()
+  @IsInt()
+  reworkCount?: number;
+
+  @IsOptional()
+  @IsInt()
+  qualityLevel?: number | null;
+}
+
+export class GeneralSectionDto {
+  @IsString()
+  @MaxLength(10)
+  code: string;
+
+  @IsString()
+  @MaxLength(500)
+  name: string;
+}
+
+export class GeneralItemDto {
+  @IsString()
+  @MaxLength(10)
+  code: string;
+
+  @IsString()
+  @MaxLength(10)
+  section: string;
+
+  @IsString()
+  @MaxLength(2000)
+  name: string;
+
+  @IsNumber()
+  max: number;
+}
+
+export class GeneralSetDto {
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => GeneralSectionDto)
+  sections: GeneralSectionDto[];
+
+  @IsArray()
+  @ArrayMaxSize(40)
+  @ValidateNested({ each: true })
+  @Type(() => GeneralItemDto)
+  items: GeneralItemDto[];
+}
+
+/** Phiên bản mới của bảng tiêu chí chung cá nhân, áp dụng từ một tháng (ADR-054). */
+export class CreateGeneralCriteriaDto {
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, { message: 'effectiveFrom có dạng YYYY-MM' })
+  effectiveFrom: string;
+
+  @ValidateNested()
+  @Type(() => GeneralSetDto)
+  leader: GeneralSetDto;
+
+  @ValidateNested()
+  @Type(() => GeneralSetDto)
+  staff: GeneralSetDto;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
+/** Giả định để mô phỏng điểm; không ghi vào hồ sơ. */
+export class SimulateDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => SimulateTaskDto)
+  tasks?: SimulateTaskDto[];
+
+  @IsOptional()
+  @IsNumber()
+  generalScore?: number | null;
 }

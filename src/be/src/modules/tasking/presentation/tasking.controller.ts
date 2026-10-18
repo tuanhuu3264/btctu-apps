@@ -8,12 +8,13 @@ import { CollaborationService } from '../application/collaboration.service.js';
 import type { Conversation, FileSearchResult } from '../application/collaboration.service.js';
 import { fileResponseHeaders } from '../application/file-rules.js';
 import { MAX_FILE_BYTES } from '../application/tasking.model.js';
-import type { AssignmentModel, AttachmentModel, CommentModel, ProgressModel, WorkTaskModel } from '../application/tasking.model.js';
+import type { AssignmentModel, AttachmentModel, CommentModel, ProgressModel, WaiverModel, WorkTaskModel } from '../application/tasking.model.js';
 
 /** Tệp đính kèm trả cho trình duyệt: không lộ khóa lưu trữ nội bộ. */
 type PublicAttachment = Omit<AttachmentModel, 'storageKey'>;
 const toPublicAttachment = ({ storageKey: _storageKey, ...rest }: AttachmentModel): PublicAttachment => rest;
 import type { TaskStatistics } from '../application/task-report.js';
+import type { EarlyWarning } from '../application/early-warning.js';
 import { TaskingService } from '../application/tasking.service.js';
 import type { AssignmentView, SearchResult } from '../application/tasking.service.js';
 import { RecurringService } from '../application/recurring.service.js';
@@ -30,11 +31,13 @@ import {
   ProposeDto,
   RejectProposalDto,
   ReportDto,
+  RevokeWaiverDto,
   ExportAssignmentsQueryDto,
   SearchQueryDto,
   UpdateAssignmentDto,
   UpdateRecurringDto,
   UploadDto,
+  WaiverDto,
 } from './tasking.dto.js';
 
 /** Phần của tệp do multer đọc (lưu trong bộ nhớ) mà controller dùng. */
@@ -91,6 +94,13 @@ export class TaskingController {
     const file = await this.tasking.exportAssignments(actor, { ...filter, scope: filter.scope ?? 'mine' }, await this.canReadAll(actor), format);
     res.set({ 'Content-Type': file.contentType, 'Content-Disposition': `attachment; filename="${file.filename}"`, 'Cache-Control': 'no-store' });
     return new StreamableFile(file.buffer);
+  }
+
+  /** Cảnh báo sớm: việc có nguy cơ chậm trong phạm vi `scope` (mine, team, all). Đặt trước `assignments/:id`. */
+  @Get('assignments/early-warning')
+  @RequirePermission('task:read')
+  async earlyWarning(@CurrentAccount() actor: CurrentAccountModel, @Query() query: SearchQueryDto): Promise<EarlyWarning> {
+    return this.tasking.earlyWarning(actor, query.scope ?? 'mine', await this.canReadAll(actor));
   }
 
   /** Thống kê việc theo bộ lọc: theo trạng thái, tỷ lệ chậm và chưa đạt, theo đơn vị. Đặt trước `assignments/:id`. */
@@ -272,5 +282,18 @@ export class TaskingController {
   @RequirePermission('task:confirm')
   decide(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DecisionDto): Promise<ProgressModel> {
     return this.tasking.decide(actor, id, dto);
+  }
+
+  /** Miễn trừ một lần chậm hoặc chưa đạt vì nguyên nhân khách quan (Nghị định 335 Điều 14.2); người xác nhận kết quả của việc. */
+  @Post('progress/:id/waiver')
+  @RequirePermission('task:confirm')
+  waive(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: WaiverDto): Promise<WaiverModel> {
+    return this.tasking.waive(actor, id, dto.reason);
+  }
+
+  @Post('progress/:id/waiver/revoke')
+  @RequirePermission('task:confirm')
+  revokeWaiver(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RevokeWaiverDto): Promise<WaiverModel> {
+    return this.tasking.revokeWaiver(actor, id, dto.note);
   }
 }

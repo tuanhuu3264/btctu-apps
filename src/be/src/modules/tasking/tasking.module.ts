@@ -15,6 +15,7 @@ import {
   OrgDirectory,
   ProgressRepository,
   RecurringTemplateRepository,
+  WaiverRepository,
   WorkTaskRepository,
 } from './application/tasking.ports.js';
 import { RecurringRunner } from './application/recurring.runner.js';
@@ -29,6 +30,7 @@ import {
   WorkCommentEntity,
   WorkConsultantEntity,
   WorkProgressEntity,
+  WorkProgressWaiverEntity,
   WorkTaskEntity,
 } from './data-access/tasking.entities.js';
 import {
@@ -38,13 +40,14 @@ import {
   TypeOrmConsultantRepository,
   TypeOrmProgressRepository,
   TypeOrmRecurringTemplateRepository,
+  TypeOrmWaiverRepository,
   TypeOrmWorkTaskRepository,
 } from './data-access/typeorm-tasking.repositories.js';
 import { TaskingController } from './presentation/tasking.controller.js';
 
 /** Giao việc, báo cáo hoàn thành, cấp trên xác nhận (ADR-016). */
 @Module({
-  imports: [TypeOrmModule.forFeature([WorkTaskEntity, WorkAssignmentEntity, WorkProgressEntity, WorkConsultantEntity, WorkCommentEntity, WorkAttachmentEntity, RecurringTemplateEntity]), SecurityModule, OrganizationModule, CatalogModule],
+  imports: [TypeOrmModule.forFeature([WorkTaskEntity, WorkAssignmentEntity, WorkProgressEntity, WorkConsultantEntity, WorkCommentEntity, WorkAttachmentEntity, RecurringTemplateEntity, WorkProgressWaiverEntity]), SecurityModule, OrganizationModule, CatalogModule],
   controllers: [TaskingController],
   providers: [
     TaskingService,
@@ -54,6 +57,7 @@ import { TaskingController } from './presentation/tasking.controller.js';
     { provide: Clock, useClass: SystemClock },
     { provide: AssignmentRepository, useClass: TypeOrmAssignmentRepository },
     { provide: ProgressRepository, useClass: TypeOrmProgressRepository },
+    { provide: WaiverRepository, useClass: TypeOrmWaiverRepository },
     { provide: WorkTaskRepository, useClass: TypeOrmWorkTaskRepository },
     { provide: RecurringTemplateRepository, useClass: TypeOrmRecurringTemplateRepository },
     { provide: ConsultantRepository, useClass: TypeOrmConsultantRepository },

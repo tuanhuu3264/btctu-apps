@@ -86,6 +86,8 @@ export const AUDIT_MODULE_LABELS: Record<string, string> = {
   organization: 'Tổ chức',
   catalog: 'Danh mục',
   tasking: 'Giao việc',
+  project: 'Đề án, dự án',
+  meeting: 'Lịch họp',
   evaluation: 'Đánh giá',
   reporting: 'Báo cáo',
   documents: 'Tài liệu',
@@ -128,3 +130,54 @@ export const foldText = (s: string) =>
     .replace(/Đ/g, 'D')
     .toLowerCase()
     .trim();
+
+/** Đề án, dự án (ADR-050): khớp `STATUS_TEXT` và `KIND_TEXT` của máy chủ. */
+export const PROJECT_STATUS_LABELS = { DRAFT: 'Đang soạn', SUBMITTED: 'Chờ duyệt', ACTIVE: 'Đang thực hiện', COMPLETED: 'Đã nghiệm thu', CANCELLED: 'Đã hủy' } as const;
+export const PROJECT_STATUS_COLORS = { DRAFT: 'default', SUBMITTED: 'gold', ACTIVE: 'blue', COMPLETED: 'green', CANCELLED: 'red' } as const;
+export const PROJECT_KIND_LABELS = { DE_AN: 'Đề án', DU_AN: 'Dự án' } as const;
+
+/** Tỷ lệ 0–1 thành phần trăm, dấu phẩy thập phân. */
+export const percentText = (r: number | null) => (r === null ? '–' : `${(r * 100).toFixed(1).replace('.', ',')}%`);
+
+/** Ngày YYYY-MM-DD thành DD/MM/YYYY. */
+export const dmyText = (d: string | null) => (d ? d.slice(0, 10).split('-').reverse().join('/') : '–');
+
+/** Lịch họp (ADR-051). */
+export const MEETING_STATUS_LABELS = { SCHEDULED: 'Sắp họp', HELD: 'Đã họp', CANCELLED: 'Đã hủy' } as const;
+export const MEETING_STATUS_COLORS = { SCHEDULED: 'blue', HELD: 'green', CANCELLED: 'default' } as const;
+export const MEETING_RESPONSE_LABELS = { PENDING: 'Chờ trả lời', ACCEPTED: 'Tham dự', DECLINED: 'Từ chối' } as const;
+export const MEETING_RESPONSE_COLORS = { PENDING: 'gold', ACCEPTED: 'green', DECLINED: 'red' } as const;
+export const MEETING_ROLE_LABELS = { ORGANIZER: 'Chủ trì', REQUIRED: 'Bắt buộc', OPTIONAL: 'Không bắt buộc' } as const;
+
+const VN_OFFSET_MS = 7 * 3600_000;
+
+/** Chuỗi "đồng hồ treo tường" giờ Việt Nam (YYYY-MM-DDTHH:mm:ss, không múi giờ) từ một thời điểm ISO. */
+export const vnWall = (iso: string | number | Date) => new Date(new Date(iso).getTime() + VN_OFFSET_MS).toISOString().slice(0, 19);
+
+/** Giờ Việt Nam "HH:mm" từ chuỗi ISO. */
+export const hhmmText = (iso: string) => vnWall(iso).slice(11, 16);
+
+/** Giờ Việt Nam "HH:mm dd/MM/yyyy". */
+export const meetingTimeText = (iso: string) => {
+  const w = vnWall(iso);
+  return `${w.slice(11, 16)} ${w.slice(8, 10)}/${w.slice(5, 7)}/${w.slice(0, 4)}`;
+};
+
+/** Khoảng giờ họp: "08:30–10:00 20/10/2026" (khác ngày thì ghi đủ hai đầu). */
+export const meetingRangeText = (startIso: string, endIso: string) => {
+  const s = vnWall(startIso);
+  const e = vnWall(endIso);
+  return s.slice(0, 10) === e.slice(0, 10) ? `${s.slice(11, 16)}–${e.slice(11, 16)} ${meetingTimeText(startIso).slice(6)}` : `${meetingTimeText(startIso)} – ${meetingTimeText(endIso)}`;
+};
+
+/** Chuỗi ISO có múi giờ +07:00 từ "đồng hồ treo tường" giờ Việt Nam (YYYY-MM-DDTHH:mm:ss). */
+export const vnIso = (wall: string) => `${wall.slice(0, 19)}+07:00`;
+
+/** Ngoại lệ văn bản cho phép giữ mức theo điểm khi có điều kiện "Không hoàn thành nhiệm vụ" (ADR-055). */
+export const EXCEPTION_LABELS: Record<string, string> = {
+  TU_GIAC_KHAC_PHUC: 'Tự giác nhận lỗi, tự phát hiện vi phạm và đã khắc phục xong hậu quả',
+  DA_TINH_NAM_TRUOC: 'Vi phạm đã tính ở năm trước (hoặc kỷ luật đảng, hành chính cùng hành vi ở hai năm)',
+  VI_PHAM_DON_VI_CU: 'Vi phạm xảy ra ở cơ quan, đơn vị cũ',
+  BAT_KHA_KHANG: 'Không hoàn thành nhiệm vụ, chỉ tiêu do bất khả kháng',
+  KHONG_THE_BIET: 'Không thể biết, hoặc đã áp dụng biện pháp phòng ngừa tham nhũng, tiêu cực',
+};

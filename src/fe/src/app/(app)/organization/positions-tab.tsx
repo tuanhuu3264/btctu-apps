@@ -16,6 +16,7 @@ interface PositionValues {
   title: string;
   level: number;
   isLeader: boolean;
+  isSupport: boolean;
   reportsToPositionId?: string | null;
   duties?: string;
   referenceOkr?: string;
@@ -70,6 +71,7 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
             title: v.title.trim(),
             level: v.level,
             isLeader: v.isLeader,
+            isSupport: v.isSupport,
             ...(v.reportsToPositionId ? { reportsToPositionId: v.reportsToPositionId } : {}),
             ...(v.duties?.trim() ? { duties: v.duties.trim() } : {}),
           });
@@ -79,6 +81,7 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
             title: v.title.trim(),
             level: v.level,
             isLeader: v.isLeader,
+            isSupport: v.isSupport,
             reportsToPositionId: v.reportsToPositionId ?? null,
             duties: v.duties?.trim() || null,
             referenceOkr: v.referenceOkr?.trim() || null,
@@ -103,11 +106,12 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
                 title: position.title,
                 level: position.level,
                 isLeader: position.isLeader,
+                isSupport: position.isSupport,
                 reportsToPositionId: position.reportsToPositionId,
                 duties: position.duties ?? undefined,
                 referenceOkr: position.referenceOkr ?? undefined,
               }
-            : { isLeader: false }
+            : { isLeader: false, isSupport: false }
         }
       >
         <Form.Item name="unitId" label="Đơn vị" rules={[{ required: true, message: 'Chọn đơn vị' }]}>
@@ -123,7 +127,7 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
               options={Object.entries(LEVEL_LABELS).map(([value, label]) => ({ value: Number(value), label }))}
               // Thêm mới: gợi ý cờ lãnh đạo theo cấp (cấp 1 đến 4); vẫn sửa tay được.
               onChange={(v: number) => {
-                if (!position) form.setFieldsValue({ isLeader: v <= 4 });
+                if (!position) form.setFieldsValue({ isLeader: v <= 4 && !form.getFieldValue('isSupport') });
               }}
             />
           </Form.Item>
@@ -148,7 +152,14 @@ function PositionFormModal({ position, rows, units, onClose }: FormModalProps) {
           valuePropName="checked"
           extra="Người giữ vị trí này được chấm thêm ba tiêu chí lãnh đạo (kết quả đơn vị, tổ chức triển khai, đoàn kết); KPI = (a+b+c+d+đ+e)/6. Không bật: KPI = (a+b+c)/3. Nghị định 335/2025/NĐ-CP Điều 15, 16."
         >
-          <Checkbox>Lãnh đạo, quản lý</Checkbox>
+          <Checkbox onChange={(e) => e.target.checked && form.setFieldsValue({ isSupport: false })}>Lãnh đạo, quản lý</Checkbox>
+        </Form.Item>
+        <Form.Item
+          name="isSupport"
+          valuePropName="checked"
+          extra="Lái xe, nhân viên phục vụ, lễ tân, bảo vệ, kỹ thuật: kết quả chấm theo ba tiêu chí chất lượng, tuân thủ quy trình, hiệu quả (mỗi tiêu chí tối đa 100%), điểm = (a+b+c)/3 × 70, không theo sản phẩm. Sổ tay Bộ Nội vụ Chương III."
+        >
+          <Checkbox onChange={(e) => e.target.checked && form.setFieldsValue({ isLeader: false })}>Người lao động hỗ trợ, phục vụ</Checkbox>
         </Form.Item>
         <Form.Item name="duties" label="Nhiệm vụ chính">
           <Input.TextArea rows={3} />
@@ -256,7 +267,7 @@ export default function PositionsTab({ rows, units, persons, canAudit = false }:
             dataIndex: 'isLeader',
             width: 90,
             align: 'center',
-            render: (v: boolean) => (v ? <Tag color="gold">Lãnh đạo</Tag> : '–'),
+            render: (v: boolean, r) => (v ? <Tag color="gold">Lãnh đạo</Tag> : r.isSupport ? <Tag color="cyan">Hỗ trợ, phục vụ</Tag> : '–'),
           },
           {
             title: 'Trạng thái',

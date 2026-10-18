@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { MAX_GENERAL_SCORE, MAX_RESULT_SCORE } from '../../scoring/index.js';
 import type { UnitMetrics } from './unit-evaluation.model.js';
 
-/** Nhóm điểm: tiêu chí chung (tối đa 30) hoặc kết quả thực hiện nhiệm vụ (tối đa 70), Nghị định 335 Điều 6, 7. */
+/** Nhóm điểm: tiêu chí chung (tối đa 30) hoặc kết quả thực hiện nhiệm vụ (tối đa 70), Quy định 366-QĐ/TW Phụ lục 1. */
 export type AxisKind = 'GENERAL' | 'RESULT';
 /** Cách tự gợi ý điểm cho trục từ số liệu tham chiếu; null là nhập tay hoàn toàn. */
 export type AutoMetric = 'COMPLETED_SHARE';
@@ -129,15 +129,79 @@ export function suggestedScores(defs: readonly AxisDefinition[], metrics: UnitMe
   return out;
 }
 
-/** Cấu hình mặc định theo bộ tiêu chí: ba nhóm chung 10, sáu trục kết quả 15, 20, 10, 10, 10, 5 (đề xuất). */
-export const DEFAULT_AXES: readonly AxisDefinition[] = [
-  { code: 'G1', name: 'Chấp hành đường lối, chỉ đạo; xây dựng và thực hiện kế hoạch', kind: 'GENERAL', maxPoints: 10, sortOrder: 10, autoMetric: null, active: true },
-  { code: 'G2', name: 'Quản lý công chức, môi trường làm việc, đoàn kết, kỷ luật kỷ cương', kind: 'GENERAL', maxPoints: 10, sortOrder: 20, autoMetric: null, active: true },
-  { code: 'G3', name: 'Cải cách hành chính, chuyển đổi số nội bộ, khắc phục tồn tại hạn chế', kind: 'GENERAL', maxPoints: 10, sortOrder: 30, autoMetric: null, active: true },
-  { code: 'T1', name: 'Thể chế hóa, tham mưu văn bản', kind: 'RESULT', maxPoints: 15, sortOrder: 110, autoMetric: null, active: true },
-  { code: 'T2', name: 'Hoàn thành chương trình, kế hoạch năm và nhiệm vụ phát sinh', kind: 'RESULT', maxPoints: 20, sortOrder: 120, autoMetric: 'COMPLETED_SHARE', active: true },
-  { code: 'T3', name: 'Quản lý, điều hành, không sai phạm', kind: 'RESULT', maxPoints: 10, sortOrder: 130, autoMetric: null, active: true },
-  { code: 'T4', name: 'Phối hợp, điều phối, sáng kiến', kind: 'RESULT', maxPoints: 10, sortOrder: 140, autoMetric: null, active: true },
-  { code: 'T5', name: 'Chuyển đổi số, đơn giản hóa thủ tục, khoa học công nghệ', kind: 'RESULT', maxPoints: 10, sortOrder: 150, autoMetric: null, active: true },
-  { code: 'T6', name: 'Giải quyết hồ sơ, đơn thư, kiến nghị', kind: 'RESULT', maxPoints: 5, sortOrder: 160, autoMetric: null, active: true },
+const axis = (code: string, name: string, kind: AxisKind, maxPoints: number, sortOrder: number, autoMetric: AutoMetric | null = null): AxisDefinition => ({
+  code,
+  name,
+  kind,
+  maxPoints,
+  sortOrder,
+  autoMetric,
+  active: true,
+});
+
+/**
+ * Sáu tiêu chí chung của tập thể theo Quy định 366-QĐ/TW Phụ lục 1 (nhóm I), vận dụng cho phòng thuộc Ban; mỗi tiêu chí 5
+ * điểm là đề xuất vì văn bản không chia điểm (bộ tiêu chí mục 3.2, GAP G-36). Dùng chung cho mọi bộ trục.
+ */
+export const GENERAL_AXES: readonly AxisDefinition[] = [
+  axis('C1', 'Xây dựng, chỉnh đốn Đảng; chất lượng cán bộ, đảng viên', 'GENERAL', 5, 10),
+  axis('C2', 'Phối hợp công tác; đoàn kết nội bộ', 'GENERAL', 5, 20),
+  axis('C3', 'Kiểm tra, giám sát, kỷ luật; không để tham nhũng, tiêu cực, suy thoái', 'GENERAL', 5, 30),
+  axis('C4', 'Tập trung dân chủ; chấp hành quy chế làm việc; phân công nhiệm vụ', 'GENERAL', 5, 40),
+  axis('C5', 'Cải cách hành chính, chuyển đổi số, văn hóa công vụ', 'GENERAL', 5, 50),
+  axis('C6', 'Tự phê bình, khắc phục hạn chế, khuyết điểm', 'GENERAL', 5, 60),
 ];
+
+/** Phần chung 30 điểm của nhóm kết quả, mọi đơn vị đều có (bộ tiêu chí mục 3.3): KH có gợi ý tự động. */
+const COMMON_RESULT_AXES: readonly AxisDefinition[] = [
+  axis('KH', 'Hoàn thành chương trình, kế hoạch công tác năm và nhiệm vụ phát sinh', 'RESULT', 15, 200, 'COMPLETED_SHARE'),
+  axis('CS', 'Ứng dụng công nghệ thông tin, chuyển đổi số; thống kê, chế độ báo cáo', 'RESULT', 5, 210),
+  axis('DN', 'Kết quả đánh giá, xếp loại đội ngũ thuộc đơn vị', 'RESULT', 10, 220),
+];
+
+/**
+ * Bộ trục mặc định: dùng cho hồ sơ của Ban và cho phòng chưa có bộ riêng (ADR-052). Khung theo Quy định 366-QĐ/TW Phụ lục 1
+ * (khối cơ quan tham mưu của Đảng); phân bổ điểm là đề xuất.
+ */
+export const DEFAULT_AXES: readonly AxisDefinition[] = [
+  ...GENERAL_AXES,
+  axis('BAN1', 'Tham mưu chủ trương, nghị quyết, quy định, đề án của cấp ủy về tổ chức xây dựng Đảng, tổ chức cán bộ, bảo vệ chính trị nội bộ', 'RESULT', 20, 110),
+  axis('BAN2', 'Hướng dẫn, kiểm tra, giám sát, thẩm định trong Đảng bộ tỉnh thuộc lĩnh vực của Ban', 'RESULT', 10, 120),
+  axis('BAN3', 'Điều hành nội bộ, phối hợp hoạt động các phòng; bảo vệ, chăm sóc sức khỏe cán bộ', 'RESULT', 10, 130),
+  ...COMMON_RESULT_AXES,
+];
+
+/**
+ * Bộ trục đề xuất của từng phòng theo mã đơn vị khi nhập cơ cấu (bộ tiêu chí Phụ lục A): phần đặc thù 40 điểm theo chức năng,
+ * nhiệm vụ tại Quy định 01-QĐ/BTCTU, trục chính nặng hơn trục phụ (05-HD/TU mục IV.1.2). Migration gieo các bộ này.
+ */
+export const UNIT_AXIS_PRESETS: Readonly<Record<string, readonly AxisDefinition[]>> = {
+  TCCB: [
+    ...GENERAL_AXES,
+    axis('TC1', 'Tham mưu chủ trương, đề án về tổ chức bộ máy, biên chế, cán bộ', 'RESULT', 15, 110),
+    axis('TC2', 'Thẩm định nhân sự và quản lý cán bộ diện Tỉnh ủy, Ban Thường vụ quản lý', 'RESULT', 15, 120),
+    axis('TC3', 'Chính sách cán bộ, đào tạo bồi dưỡng, tiền lương', 'RESULT', 10, 130),
+    ...COMMON_RESULT_AXES,
+  ],
+  TCDDV: [
+    ...GENERAL_AXES,
+    axis('DD1', 'Xây dựng tổ chức đảng; hướng dẫn, kiểm tra nghiệp vụ; thẩm định đánh giá, xếp loại tổ chức đảng', 'RESULT', 15, 110),
+    axis('DD2', 'Phát triển, quản lý đảng viên và cơ sở dữ liệu đảng viên', 'RESULT', 15, 120),
+    axis('DD3', 'Khen thưởng tổ chức đảng, đảng viên; thi đua của Ngành', 'RESULT', 10, 130),
+    ...COMMON_RESULT_AXES,
+  ],
+  BVCTNB: [
+    ...GENERAL_AXES,
+    axis('BV1', 'Thẩm tra, xác minh cán bộ, đảng viên có vấn đề về chính trị', 'RESULT', 20, 110),
+    axis('BV2', 'Tiếp nhận, phân loại, tham mưu xử lý đơn thư khiếu nại, tố cáo gửi Ban', 'RESULT', 10, 120),
+    axis('BV3', 'Tham mưu chủ trương, kiểm tra, giám sát công tác bảo vệ chính trị nội bộ; quản lý hồ sơ', 'RESULT', 10, 130),
+    ...COMMON_RESULT_AXES,
+  ],
+  VP: [
+    ...GENERAL_AXES,
+    axis('VP1', 'Tổng hợp, điều phối chương trình công tác và chế độ thông tin, báo cáo của Ban', 'RESULT', 15, 110),
+    axis('VP2', 'Văn thư, lưu trữ, hành chính, quản trị, tài chính, hậu cần', 'RESULT', 15, 120),
+    axis('VP3', 'Bảo vệ, chăm sóc sức khỏe và chính sách cán bộ; tổ chức cán bộ, thi đua, cải cách hành chính của cơ quan', 'RESULT', 10, 130),
+    ...COMMON_RESULT_AXES,
+  ],
+};

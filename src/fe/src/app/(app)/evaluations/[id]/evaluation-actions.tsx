@@ -2,12 +2,13 @@
 
 import { Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Typography } from 'antd';
 import { useState } from 'react';
-import type { EvaluationStatus, EvaluationTask } from '@/lib/api';
+import type { EvaluationDetail, EvaluationStatus, EvaluationTask, GeneralMark, SupportScores } from '@/lib/api';
 import { apiCall } from '@/lib/client';
 import CatalogItemPicker from '@/components/catalog-item-picker';
 import type { PickerGroup, PickerItem, PickerTask } from '@/components/catalog-item-picker';
-import { QUALITY_LABELS } from '@/lib/labels';
+import { EXCEPTION_LABELS, QUALITY_LABELS } from '@/lib/labels';
 import { useAction } from '@/lib/use-action';
+import GeneralCriteriaFields, { generalInitial, generalMarks } from './general-criteria-fields';
 
 interface Props {
   evaluationId: string;
@@ -19,6 +20,10 @@ interface Props {
   selfGeneralScore: number | null;
   /** Cán bộ lãnh đạo, quản lý được chấm thêm tiêu chí D; unitResult là gợi ý từ xếp loại của cấp dưới. */
   isLeader: boolean;
+  /** Vị trí hỗ trợ, phục vụ: chấm ba tiêu chí a, b, c (%) thay cho chỉ tiêu (ADR-053). */
+  isSupport: boolean;
+  /** Ba tiêu chí người lao động đã tự đánh giá, dùng làm giá trị gợi ý khi thẩm định. */
+  selfSupport: SupportScores | null;
   /** Kỳ năm: điểm là trung bình các tháng, không nhập điểm và chỉ tiêu (ADR-035). */
   isYear: boolean;
   /** Kỳ năm: đủ điều kiện xếp loại (từ 6 tháng); chưa đủ thì được đóng là "không xếp loại" (ADR-039). */
@@ -26,6 +31,15 @@ interface Props {
   suggestedUnitResult: number | null;
   /** Gợi ý tiêu chí đoàn kết từ phản ánh, khiếu nại về mất đoàn kết trong kỳ (ADR-040). */
   suggestedSolidarity: { value: number; reason: string } | null;
+  /** Bảng tiêu chí chung chấm theo mục (ADR-054); null thì nhập một điểm 0–30. */
+  generalCriteria: EvaluationDetail['generalCriteria'];
+  /** Kết quả tự chấm từng mục, gợi ý khi thẩm định và để so khi chấm khác. */
+  selfGeneral: GeneralMark[] | null;
+  previous: EvaluationDetail['previous'];
+  /** Mục bắt buộc Không đảm bảo do kỷ luật, kết luận trong kỳ (ADR-055). */
+  forcedItems: EvaluationDetail['forcedItems'];
+  /** Kỳ năm: điều kiện "Không hoàn thành nhiệm vụ"; có thì người phê duyệt được chọn ngoại lệ. */
+  yearConditions: EvaluationDetail['yearConditions'];
   /** Công việc trong danh mục của kỳ, để chọn khi giao chỉ tiêu. */
   catalogItems: PickerItem[];
   catalogGroups: PickerGroup[];
@@ -38,18 +52,74 @@ const LEADERSHIP_OPTIONS = [
 ];
 
 const blank = (s?: string) => (s?.trim() ? s.trim() : undefined);
+
 const GENERAL_RULES = [{ required: true, message: 'Nhập điểm' }];
 
-export default function EvaluationActions({ evaluationId, status, periodOpen, permissions, tasks, selfGeneralScore, isLeader, isYear, yearEnough, suggestedUnitResult, suggestedSolidarity, catalogItems, catalogGroups, catalogTasks }: Props) {
+/** Ba tiêu chí của người lao động hỗ trợ, phục vụ (Sổ tay Bộ Nội vụ Chương III); tên trường có tiền tố `sup-`. */
+const SUPPORT_FIELDS: { key: keyof SupportScores; label: string; extra: string }[] = [
+  { key: 'quality', label: 'a. Chất lượng công việc (%)', extra: 'Ví dụ lái xe: đưa đón, vận chuyển đúng địa điểm, đúng giờ; phục vụ: khu vực được giao sạch sẽ, phục vụ hội nghị đầy đủ.' },
+  { key: 'compliance', label: 'b. Tuân thủ quy định, quy trình (%)', extra: 'An toàn giao thông, an toàn lao động, phòng cháy; bảo vệ bí mật nhà nước khi vận chuyển, sao chụp tài liệu.' },
+  { key: 'efficiency', label: 'c. Hiệu quả công việc (%)', extra: 'Bảo dưỡng phương tiện, thiết bị đúng định kỳ; dùng vật tư, nhiên liệu tiết kiệm.' },
+];
+
+function SupportCriteria({ title }: { title: string }) {
+  return (
+    <Card size="small" type="inner" title={title} style={{ marginBottom: 16 }}>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Điểm đánh giá = (a + b + c) / 3; điểm kết quả = điểm đánh giá × 70. Mỗi tiêu chí tối đa 100%.
+      </Typography.Paragraph>
+      {SUPPORT_FIELDS.map((f) => (
+        <Form.Item key={f.key} name={`sup-${f.key}`} label={f.label} extra={f.extra} rules={[{ required: true, message: 'Nhập tỷ lệ' }]}>
+          <InputNumber min={0} max={100} step={5} addonAfter="%" />
+        </Form.Item>
+      ))}
+    </Card>
+  );
+}
+
+type Values = Record<string, unknown>;
+
+const supportOf = (v: Values): SupportScores => ({
+  quality: Number(v['sup-quality']),
+  compliance: Number(v['sup-compliance']),
+  efficiency: Number(v['sup-efficiency']),
+});
+
+export default function EvaluationActions({
+  evaluationId,
+  status,
+  periodOpen,
+  permissions,
+  tasks,
+  selfGeneralScore,
+  isLeader,
+  isSupport,
+  selfSupport,
+  isYear,
+  yearEnough,
+  suggestedUnitResult,
+  suggestedSolidarity,
+  generalCriteria,
+  selfGeneral,
+  previous,
+  forcedItems,
+  yearConditions,
+  catalogItems,
+  catalogGroups,
+  catalogTasks,
+}: Props) {
   const { run, busy } = useAction();
   const can = (p: string) => permissions.includes(p);
   const [returning, setReturning] = useState(false);
   const [approving, setApproving] = useState(false);
   const [assignForm] = Form.useForm<{ code: string; planned: number }>();
-  const [selfForm] = Form.useForm<Record<string, number | string | undefined>>();
-  const [reviewForm] = Form.useForm<Record<string, number | string | undefined>>();
+  const [selfForm] = Form.useForm<Values>();
+  const [reviewForm] = Form.useForm<Values>();
+  const criteria = isYear ? null : generalCriteria;
+  const byItem = criteria !== null;
   const [returnForm] = Form.useForm<{ reason: string }>();
-  const [approveForm] = Form.useForm<{ comment?: string }>();
+  const [approveForm] = Form.useForm<{ comment?: string; exception?: string; exceptionNote?: string }>();
+  const exceptionChosen = Form.useWatch('exception', approveForm);
 
   const planned = status === 'PLANNED';
   const canAssign = periodOpen && planned && can('evaluation:assign') && !isYear;
@@ -61,7 +131,7 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
 
   if (!canAssign && !canSelf && !canReview && !canApprove && !canNotRated) return null;
 
-  const saveResults = async (v: Record<string, number | string | undefined>) => {
+  const saveResults = async (v: Values) => {
     for (const t of tasks.filter((x) => x.sourceAssignmentIds.length === 0)) {
       await apiCall('PATCH', `/evaluation/tasks/${t.id}/result`, { completedQuantity: Number(v[`done-${t.id}`] ?? 0), evidence: blank(v[`ev-${t.id}`] as string | undefined) });
     }
@@ -141,11 +211,15 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
           <Form
             form={selfForm}
             layout="vertical"
-            initialValues={Object.fromEntries(tasks.flatMap((t) => [[`done-${t.id}`, t.completedQuantity], [`ev-${t.id}`, t.evidence ?? '']]))}
+            initialValues={{
+              ...Object.fromEntries(tasks.flatMap((t) => [[`done-${t.id}`, t.completedQuantity], [`ev-${t.id}`, t.evidence ?? '']])),
+              ...(byItem ? generalInitial(criteria!, selfGeneral, forcedItems) : {}),
+            }}
           >
             {isYear && <Typography.Paragraph type="secondary">Điểm năm là trung bình cộng điểm các tháng đã phê duyệt, nên bạn không tự chấm điểm ở kỳ năm. Chỉ cần nộp hồ sơ để cấp trên thẩm định.</Typography.Paragraph>}
-            {!isYear && tasks.length === 0 && <Typography.Paragraph type="secondary">Chưa có chỉ tiêu nào được giao.</Typography.Paragraph>}
-            {(isYear ? [] : tasks).map((t) =>
+            {!isYear && !isSupport && tasks.length === 0 && <Typography.Paragraph type="secondary">Chưa có chỉ tiêu nào được giao.</Typography.Paragraph>}
+            {!isYear && isSupport && <SupportCriteria title="Tự đánh giá ba tiêu chí (người lao động hỗ trợ, phục vụ)" />}
+            {(isYear || isSupport ? [] : tasks).map((t) =>
               t.sourceAssignmentIds.length > 0 ? (
                 <Typography.Paragraph key={t.id}>
                   <Typography.Text strong>{t.catalogItemCode}</Typography.Text>: đã hoàn thành {t.completedQuantity}/{t.plannedQuantity} (lấy từ việc được giao, cấp trên đã xác nhận, không sửa ở đây).
@@ -164,8 +238,9 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
               </Space>
               ),
             )}
+            {byItem && <GeneralCriteriaFields form={selfForm} criteria={criteria!} previous={previous} forced={forcedItems} />}
             <Space align="start" wrap>
-              {!isYear && (
+              {!isYear && !byItem && (
                 <Form.Item name="general" label="Điểm tiêu chí chung (0–30)" rules={GENERAL_RULES}>
                   <InputNumber min={0} max={30} step={0.5} />
                 </Form.Item>
@@ -175,7 +250,7 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
               </Form.Item>
             </Space>
             <Space>
-              {!isYear && (
+              {!isYear && !isSupport && (
                 <Button loading={busy} onClick={() => run(async () => saveResults(selfForm.getFieldsValue()), { success: 'Đã lưu kết quả' })}>
                   Lưu kết quả
                 </Button>
@@ -188,8 +263,12 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
                   if (!v) return;
                   await run(
                     async () => {
-                      if (!isYear) await saveResults(v);
-                      await apiCall('POST', `/evaluation/evaluations/${evaluationId}/self-submit`, { ...(isYear ? {} : { generalScore: Number(v.general) }), comment: blank(v.comment as string | undefined) });
+                      if (!isYear && !isSupport) await saveResults(v);
+                      await apiCall('POST', `/evaluation/evaluations/${evaluationId}/self-submit`, {
+                        ...(isYear ? {} : byItem ? { general: generalMarks(criteria!, v) } : { generalScore: Number(v.general) }),
+                        ...(isSupport && !isYear ? { support: supportOf(v) } : {}),
+                        comment: blank(v.comment as string | undefined),
+                      });
                     },
                     { success: 'Đã gửi thẩm định' },
                   );
@@ -209,6 +288,8 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
             layout="vertical"
             initialValues={{
               general: selfGeneralScore ?? undefined,
+              ...(byItem ? generalInitial(criteria!, selfGeneral, forcedItems) : {}),
+              ...(isSupport && selfSupport ? { 'sup-quality': selfSupport.quality, 'sup-compliance': selfSupport.compliance, 'sup-efficiency': selfSupport.efficiency } : {}),
               ...(isLeader && suggestedUnitResult !== null ? { 'lead-unit': suggestedUnitResult } : {}),
               ...(isLeader && suggestedSolidarity ? { 'lead-sol': suggestedSolidarity.value } : {}),
               ...Object.fromEntries(tasks.flatMap((t) => [[`c-${t.id}`, t.completedQuantity], [`q-${t.id}`, t.qualityLevel ?? undefined]])),
@@ -221,9 +302,11 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
                     ...(isYear
                       ? {}
                       : {
-                          generalScore: Number(v.general),
+                          ...(byItem ? { general: generalMarks(criteria!, v) } : { generalScore: Number(v.general) }),
                           ...(isLeader ? { leadership: { unitResult: v['lead-unit'], organizing: v['lead-org'], solidarity: v['lead-sol'] } } : {}),
-                          tasks: tasks.map((t) => ({ taskId: t.id, qualityLevel: v[`q-${t.id}`] as number | undefined, completedQuantity: v[`c-${t.id}`] as number | undefined })),
+                          ...(isSupport
+                            ? { support: supportOf(v) }
+                            : { tasks: tasks.map((t) => ({ taskId: t.id, qualityLevel: v[`q-${t.id}`] as number | undefined, completedQuantity: v[`c-${t.id}`] as number | undefined })) }),
                         }),
                   });
                 },
@@ -232,7 +315,8 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
             }
           >
             {isYear && <Typography.Paragraph type="secondary">Điểm năm lấy trung bình cộng các tháng đã phê duyệt (xem bảng ở trên), bạn không nhập điểm. Nếu có tháng thiếu thuộc nghỉ ốm, thai sản thì ghi vào nhận xét.</Typography.Paragraph>}
-            {(isYear ? [] : tasks).map((t) => (
+            {!isYear && isSupport && <SupportCriteria title="Người quản lý đánh giá ba tiêu chí (gợi ý sẵn theo điểm tự đánh giá)" />}
+            {(isYear || isSupport ? [] : tasks).map((t) => (
               <Space key={t.id} align="start" wrap>
                 <Typography.Text strong style={{ lineHeight: '32px', width: 60, display: 'inline-block' }}>
                   {t.catalogItemCode}
@@ -278,8 +362,9 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
                 </Form.Item>
               </Card>
             )}
+            {byItem && <GeneralCriteriaFields form={reviewForm} criteria={criteria!} selfMarks={selfGeneral} previous={previous} forced={forcedItems} />}
             <Space align="start" wrap>
-              {!isYear && (
+              {!isYear && !byItem && (
                 <Form.Item name="general" label="Điểm tiêu chí chung (0–30)" rules={GENERAL_RULES}>
                   <InputNumber min={0} max={30} step={0.5} />
                 </Form.Item>
@@ -343,10 +428,33 @@ export default function EvaluationActions({ evaluationId, status, periodOpen, pe
               form={approveForm}
               layout="vertical"
               onFinish={async (v) => {
-                const ok = await run(async () => void (await apiCall('POST', `/evaluation/evaluations/${evaluationId}/approve`, { comment: blank(v.comment) })), { success: 'Đã phê duyệt' });
+                const exception = v.exception ? { code: v.exception, note: (v.exceptionNote ?? '').trim() } : undefined;
+                const ok = await run(async () => void (await apiCall('POST', `/evaluation/evaluations/${evaluationId}/approve`, { comment: blank(v.comment), exception })), { success: 'Đã phê duyệt' });
                 if (ok) setApproving(false);
               }}
             >
+              {yearConditions.length > 0 && (
+                <>
+                  <Typography.Paragraph>
+                    Hồ sơ có điều kiện xếp loại <b>Không hoàn thành nhiệm vụ</b> (39-QĐ/TU Điều 11 mục 4):
+                  </Typography.Paragraph>
+                  <ul style={{ marginTop: 0 }}>
+                    {yearConditions.map((c) => (
+                      <li key={c.code}>
+                        {c.text} ({c.basis})
+                      </li>
+                    ))}
+                  </ul>
+                  <Form.Item name="exception" label="Ngoại lệ (chỉ chọn khi văn bản cho phép; để trống thì giữ Không hoàn thành nhiệm vụ)">
+                    <Select allowClear placeholder="Không áp dụng ngoại lệ" options={Object.entries(EXCEPTION_LABELS).map(([value, label]) => ({ value, label }))} />
+                  </Form.Item>
+                  {exceptionChosen && (
+                    <Form.Item name="exceptionNote" label="Căn cứ của ngoại lệ" rules={[{ required: true, whitespace: true, message: 'Ghi căn cứ: hoàn cảnh, tính chất, mức độ vi phạm, kết quả khắc phục' }]}>
+                      <Input.TextArea rows={3} maxLength={2000} />
+                    </Form.Item>
+                  )}
+                </>
+              )}
               <Form.Item name="comment" label="Ý kiến (tùy chọn)">
                 <Input.TextArea rows={3} maxLength={2000} />
               </Form.Item>

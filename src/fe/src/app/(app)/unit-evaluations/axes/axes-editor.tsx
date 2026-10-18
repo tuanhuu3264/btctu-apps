@@ -17,14 +17,15 @@ const CODE_PATTERN = /^[A-Z][A-Z0-9]{0,9}$/;
 const EMPTY_DRAFT = { code: '', name: '', kind: 'RESULT' as AxisKind, maxPoints: 5 };
 
 /**
- * Cấu hình các trục chấm điểm tập thể (ADR-036). Tổng điểm tối đa các trục đang bật của mỗi nhóm phải đúng 30 hoặc 70;
- * nhóm tắt hết trục thì người chấm nhập một số. Máy chủ vẫn kiểm tra lại và từ chối khi còn hồ sơ đang chờ thẩm định.
+ * Cấu hình một bộ trục chấm điểm tập thể (ADR-036, ADR-052). Tổng điểm tối đa các trục đang bật của mỗi nhóm phải đúng 30
+ * hoặc 70; nhóm tắt hết trục thì người chấm nhập một số. Máy chủ vẫn kiểm tra lại và từ chối khi còn hồ sơ dùng bộ này đang
+ * chờ thẩm định. `createsOwn`: phòng đang dùng bộ mặc định, lưu là tạo bộ riêng (lưu được cả khi chưa sửa gì).
  */
-export default function AxesEditor({ initial, canEdit }: { initial: AxisDefinition[]; canEdit: boolean }) {
+export default function AxesEditor({ initial, canEdit, unitId, createsOwn }: { initial: AxisDefinition[]; canEdit: boolean; unitId: string | null; createsOwn: boolean }) {
   const { run, busy } = useAction();
   const [axes, setAxes] = useState(initial);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
-  const dirty = JSON.stringify(axes) !== JSON.stringify(initial);
+  const dirty = createsOwn || JSON.stringify(axes) !== JSON.stringify(initial);
 
   const patch = (code: string, change: Partial<AxisDefinition>) => setAxes((cur) => cur.map((a) => (a.code === code ? { ...a, ...change } : a)));
   const sums = (Object.keys(KIND) as AxisKind[]).map((kind) => {
@@ -53,7 +54,7 @@ export default function AxesEditor({ initial, canEdit }: { initial: AxisDefiniti
         type="info"
         showIcon
         message="Người thẩm định chấm điểm từng trục; điểm tiêu chí chung và điểm kết quả là tổng các trục cùng nhóm"
-        description="Phân bổ mặc định theo bộ tiêu chí là đề xuất, vì văn bản chưa quy định chi tiết (Nghị định 335/2025/NĐ-CP Điều 7.2). Hồ sơ đã chấm giữ nguyên bộ trục lúc chấm. Không đổi được khi còn hồ sơ đang chờ thẩm định hoặc công nhận."
+        description="Khung theo Quy định 366-QĐ/TW Phụ lục 1 (khối cơ quan tham mưu của Đảng); phân bổ điểm là đề xuất vì văn bản không chia điểm từng tiêu chí. Hồ sơ đã chấm giữ nguyên bộ trục lúc chấm. Không đổi được khi còn hồ sơ dùng bộ này đang chờ thẩm định hoặc công nhận."
       />
       <Card size="small">
         <Table<AxisDefinition>
@@ -138,16 +139,16 @@ export default function AxesEditor({ initial, canEdit }: { initial: AxisDefiniti
             onClick={() =>
               run(
                 async () => {
-                  const saved = await apiCall<AxisDefinition[]>('PUT', '/unit-evaluation/axes', { axes });
+                  const saved = await apiCall<AxisDefinition[]>('PUT', '/unit-evaluation/axes', { axes, unitId });
                   if (saved) setAxes(saved);
                 },
-                { success: 'Đã lưu cấu hình trục' },
+                { success: createsOwn ? 'Đã tạo bộ trục riêng cho phòng' : 'Đã lưu cấu hình trục' },
               )
             }
           >
-            Lưu cấu hình
+            {createsOwn ? 'Lưu thành bộ riêng của phòng' : 'Lưu cấu hình'}
           </Button>
-          <Button disabled={!dirty} onClick={() => setAxes(initial)}>
+          <Button disabled={JSON.stringify(axes) === JSON.stringify(initial)} onClick={() => setAxes(initial)}>
             Hoàn tác
           </Button>
         </Space>

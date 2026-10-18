@@ -21,6 +21,8 @@ export class TaskingWorkSourceAdapter extends PeriodWorkSource {
       confirmedQuantity: w.confirmedQuantity,
       lateCount: w.lateCount,
       reworkCount: w.reworkCount,
+      waivedLateCount: w.waivedLateCount,
+      waivedReworkCount: w.waivedReworkCount,
       evidence: w.evidence,
     }));
   }

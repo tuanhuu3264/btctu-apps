@@ -59,6 +59,8 @@ export interface PositionInfo {
   unitId?: string;
   level: number;
   isLeader?: boolean;
+  /** Vị trí hỗ trợ, phục vụ (ADR-053). */
+  isSupport?: boolean;
 }
 
 /** Một vị trí cán bộ giữ, là vị trí chính hay kiêm nhiệm (ADR-047). */
@@ -94,6 +96,9 @@ export interface PeriodWork {
   confirmedQuantity: number;
   lateCount: number;
   reworkCount: number;
+  /** Số lần chậm, chưa đạt đã được miễn trừ do nguyên nhân khách quan; không nằm trong `lateCount`, `reworkCount` (ADR-056). */
+  waivedLateCount?: number;
+  waivedReworkCount?: number;
   evidence: string | null;
 }
 
@@ -121,6 +126,14 @@ export interface CatalogVersionInfo {
 export abstract class CatalogDirectory {
   abstract currentApprovedVersionId(): Promise<string | null>;
   abstract getVersion(versionId: string): Promise<CatalogVersionInfo | null>;
+}
+
+/**
+ * Số việc được giao và đã hoàn thành trong kỳ của đơn vị chứa vị trí (gồm các đơn vị cấp dưới), để xét điều kiện "đơn vị phụ trách
+ * hoàn thành dưới 70% nhiệm vụ" của cán bộ lãnh đạo (39-QĐ/TU mục 4.2.a). null khi vị trí không thuộc đơn vị nào.
+ */
+export abstract class UnitCompletionSource {
+  abstract of(positionId: string, period: { type: 'MONTH' | 'QUARTER' | 'YEAR'; startDate: string; endDate: string }): Promise<{ unitName: string; works: number; completed: number } | null>;
 }
 
 /** Cổng sang đánh giá tập thể: mức của đơn vị do cán bộ đứng đầu trong kỳ năm. */

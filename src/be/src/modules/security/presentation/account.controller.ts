@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { AccountService } from '../application/account.service.js';
 import type { AccountSummary, RoleAssignmentModel } from '../application/authorization.model.js';
+import { MfaService } from '../application/mfa.service.js';
 import { RoleService } from '../application/role.service.js';
 import type { CurrentAccount as CurrentAccountModel } from '../application/security.model.js';
 import { CreateAccountDto, GrantRoleDto } from './account.dto.js';
@@ -12,6 +13,7 @@ export class AccountController {
   constructor(
     private readonly accounts: AccountService,
     private readonly roles: RoleService,
+    private readonly mfa: MfaService,
   ) {}
 
   @Get()
@@ -31,6 +33,14 @@ export class AccountController {
   @RequirePermission('account:disable')
   disable(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
     return this.accounts.disable(actor, id);
+  }
+
+  /** Mất thiết bị xác thực: xóa thiết bị, thu hồi phiên; lần đăng nhập sau đăng ký lại (ADR-048). */
+  @Post(':id/mfa/reset')
+  @HttpCode(204)
+  @RequirePermission('account:mfa-reset')
+  resetMfa(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
+    return this.mfa.reset(actor, id);
   }
 
   @Get(':id/roles')

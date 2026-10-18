@@ -5,12 +5,16 @@ import type { EvaluationModel, PeriodModel, TaskModel } from '../application/eva
 import type { LeaveMonth } from '../application/leave.js';
 import { EvaluationService } from '../application/evaluation.service.js';
 import { UnitEvaluationService } from '../application/unit-evaluation.service.js';
-import type { EvaluationView, GenerateResult, PeriodView } from '../application/evaluation.service.js';
+import { RatingEventService } from '../application/rating-event.service.js';
+import type { RatingEventModel } from '../application/rating-events.js';
+import type { EvaluationView, GenerateResult, InsightView, PeriodView } from '../application/evaluation.service.js';
+import type { Simulation } from '../application/score-insight.js';
 import {
   AddTaskDto,
   ApproveEvaluationDto,
   CreateEvaluationDto,
   CreatePeriodDto,
+  CreateRatingEventDto,
   RecordResultDto,
   NotRatedDto,
   SetDeadlineDto,
@@ -18,6 +22,7 @@ import {
   ReturnDto,
   ReviewDto,
   SelfSubmitDto,
+  SimulateDto,
 } from './evaluation.dto.js';
 
 @Controller('evaluation')
@@ -25,6 +30,7 @@ export class EvaluationController {
   constructor(
     private readonly evaluation: EvaluationService,
     private readonly unitEvaluation: UnitEvaluationService,
+    private readonly ratingEvents: RatingEventService,
     private readonly authorization: AuthorizationService,
   ) {}
 
@@ -115,10 +121,50 @@ export class EvaluationController {
     return this.evaluation.setLeave(actor, personId, dto.year, dto.months);
   }
 
+  /** Kỷ luật, kết luận, kết quả lấy phiếu của cán bộ trong năm (ADR-055); chỉ chính cán bộ, cấp trên và người xem toàn bộ. */
+  @Get('persons/:personId/rating-events')
+  @RequirePermission('evaluation:read')
+  async listRatingEvents(
+    @CurrentAccount() actor: CurrentAccountModel,
+    @Param('personId', ParseUUIDPipe) personId: string,
+    @Query('year', ParseIntPipe) year: number,
+  ): Promise<RatingEventModel[]> {
+    return this.ratingEvents.list(actor, personId, year, await this.canReadAll(actor));
+  }
+
+  /** Văn phòng ghi nhận kỷ luật, kết luận, kết quả lấy phiếu. */
+  @Post('persons/:personId/rating-events')
+  @RequirePermission('evaluation:period-manage')
+  createRatingEvent(@CurrentAccount() actor: CurrentAccountModel, @Param('personId', ParseUUIDPipe) personId: string, @Body() dto: CreateRatingEventDto): Promise<RatingEventModel> {
+    return this.ratingEvents.create(actor, personId, dto);
+  }
+
+  @Delete('rating-events/:id')
+  @HttpCode(204)
+  @RequirePermission('evaluation:period-manage')
+  removeRatingEvent(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
+    return this.ratingEvents.remove(actor, id);
+  }
+
   @Get('evaluations/:id')
   @RequirePermission('evaluation:read')
   async get(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<EvaluationView> {
     return this.evaluation.getEvaluation(actor, id, await this.canReadAll(actor));
+  }
+
+  /** Giải thích điểm của hồ sơ: điểm từng thành phần, điểm mất ở từng dòng việc, gợi ý để lên mức kế tiếp. */
+  @Get('evaluations/:id/insight')
+  @RequirePermission('evaluation:read')
+  async insight(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string): Promise<InsightView> {
+    return this.evaluation.getInsight(actor, id, await this.canReadAll(actor));
+  }
+
+  /** Mô phỏng "nếu…": tính lại điểm với giả định, không ghi vào hồ sơ. */
+  @Post('evaluations/:id/simulate')
+  @HttpCode(200)
+  @RequirePermission('evaluation:read')
+  async simulate(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SimulateDto): Promise<Simulation> {
+    return this.evaluation.simulate(actor, id, await this.canReadAll(actor), dto);
   }
 
   // ---- chỉ tiêu
@@ -180,6 +226,6 @@ export class EvaluationController {
   @Post('evaluations/:id/approve')
   @RequirePermission('evaluation:approve')
   approve(@CurrentAccount() actor: CurrentAccountModel, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ApproveEvaluationDto): Promise<EvaluationView> {
-    return this.evaluation.approve(actor, id, dto.comment);
+    return this.evaluation.approve(actor, id, dto.comment, dto.exception);
   }
 }

@@ -14,7 +14,8 @@ export interface HttpSecurityOptions {
   trustProxy?: string | number | boolean;
 }
 
-const isLogin = (req: Request) => req.method === 'POST' && req.path.endsWith('/auth/login');
+/** Đăng nhập và các bước nhập mã MFA dùng chung một giới hạn tần suất, vì cùng là đoán thông tin xác thực. */
+const isLogin = (req: Request) => req.method === 'POST' && (req.path.endsWith('/auth/login') || /\/auth\/mfa\/(verify|enroll)\//.test(req.path + '/'));
 
 const intFrom = (value: string | undefined, fallback: number): number => {
   const n = Number(value);

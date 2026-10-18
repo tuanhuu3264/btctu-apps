@@ -46,6 +46,16 @@ export interface UnitEvaluationView {
   openComplaints: number;
 }
 
+/** Một bộ trục: bộ mặc định (`unitId` null) hoặc bộ đang áp dụng cho một đơn vị (ADR-052). */
+export interface AxisSetView {
+  unitId: string | null;
+  unitCode: string | null;
+  unitName: string | null;
+  /** Đơn vị có bộ riêng; false là đơn vị đang dùng bộ mặc định (khi đó `axes` là bộ mặc định). */
+  own: boolean;
+  axes: AxisDefinition[];
+}
+
 export interface GenerateUnitsResult {
   created: number;
   existing: number;
@@ -88,34 +98,95 @@ export class UnitEvaluationService {
     private readonly complaints: UnitComplaintRepository,
   ) {}
 
-  /** Các trục chấm điểm hiện có, kể cả trục đã tắt (ADR-036). */
-  axes(): Promise<AxisDefinition[]> {
-    return this.axisConfig.findAll();
+  /**
+   * Các trục dùng khi chấm hồ sơ của một đơn vị, kể cả trục đã tắt: bộ riêng của đơn vị nếu có, không thì bộ mặc định
+   * (ADR-036, ADR-052). Không truyền đơn vị là bộ mặc định.
+   */
+  async axes(unitId: string | null = null): Promise<AxisDefinition[]> {
+    if (unitId === null) return this.axisConfig.findSet(null);
+    await this.requireUnit(unitId);
+    return this.axesFor(unitId);
+  }
+
+  /** Bộ mặc định và bộ đang áp dụng cho từng đơn vị, để Văn phòng xem và sửa (ADR-052). */
+  async axisSets(): Promise<AxisSetView[]> {
+    const [defaults, units, own] = await Promise.all([this.axisConfig.findSet(null), this.directory.units(), this.axisConfig.unitsWithOwnSet()]);
+    const ownSet = new Set(own);
+    const sets: AxisSetView[] = [{ unitId: null, unitCode: null, unitName: null, own: true, axes: defaults }];
+    for (const u of [...units].sort((a, b) => Number(a.parentId !== null) - Number(b.parentId !== null) || a.name.localeCompare(b.name, 'vi'))) {
+      const has = ownSet.has(u.id);
+      sets.push({ unitId: u.id, unitCode: u.code, unitName: u.name, own: has, axes: has ? await this.axisConfig.findSet(u.id) : defaults });
+    }
+    return sets;
   }
 
   /**
-   * Thay cấu hình trục. Tổng điểm tối đa mỗi nhóm đang bật phải đúng 30 hoặc 70; không sửa khi còn hồ sơ tập thể đang
-   * chờ thẩm định hoặc phê duyệt trong kỳ đang mở để cùng một kỳ chấm theo cùng bộ trục (ADR-036 mục 6).
+   * Thay một bộ trục: bộ mặc định khi `unitId` null, còn lại là bộ riêng của đơn vị. Tổng điểm tối đa mỗi nhóm đang bật
+   * phải đúng 30 hoặc 70; không sửa khi còn hồ sơ dùng bộ đó đang chờ thẩm định hoặc phê duyệt trong kỳ đang mở, để cùng
+   * một kỳ chấm theo cùng bộ trục (ADR-036 mục 6).
    */
-  async replaceAxes(actor: Actor, axes: readonly AxisDefinition[]): Promise<AxisDefinition[]> {
+  async replaceAxes(actor: Actor, axes: readonly AxisDefinition[], unitId: string | null = null): Promise<AxisDefinition[]> {
+    const unit = unitId === null ? null : await this.requireUnit(unitId);
     const errors = validateAxisConfig(axes);
+    if (unit && axes.length === 0) errors.push('Bộ trục riêng cần ít nhất một trục; muốn dùng lại bộ mặc định thì bỏ bộ riêng');
     if (errors.length > 0) throw new BadRequestException(errors.join('; '));
-    for (const period of (await this.periods.findAll()).filter((p) => p.type === 'YEAR' && p.status === 'OPEN')) {
-      const inFlight = (await this.evaluations.findByPeriod(period.id)).filter((e) => e.status === 'SELF_SUBMITTED' || e.status === 'REVIEWED');
-      if (inFlight.length > 0) {
-        throw new ConflictException(`Kỳ ${period.label} còn ${inFlight.length} hồ sơ tập thể đang chờ thẩm định hoặc phê duyệt; hãy hoàn tất hoặc trả lại trước khi đổi trục chấm điểm`);
-      }
-    }
-    const before = await this.axisConfig.findAll();
+    await this.assertNoInFlight(unitId);
+    const before = await this.axisConfig.findSet(unitId);
     const sorted = [...axes].sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
-    await this.axisConfig.replaceAll(sorted);
+    await this.axisConfig.replaceSet(unitId, sorted);
     await this.audit.record({
       action: 'unit-evaluation.axes.update',
       outcome: 'SUCCESS',
       targetType: 'unit_axis',
-      details: { before: before.map((a) => ({ code: a.code, max: a.maxPoints, active: a.active })), after: sorted.map((a) => ({ code: a.code, max: a.maxPoints, active: a.active })) },
+      targetId: unitId ?? undefined,
+      details: {
+        set: unit ? unit.code : 'DEFAULT',
+        before: before.map((a) => ({ code: a.code, max: a.maxPoints, active: a.active })),
+        after: sorted.map((a) => ({ code: a.code, max: a.maxPoints, active: a.active })),
+      },
     });
     return sorted;
+  }
+
+  /** Bỏ bộ trục riêng của đơn vị: hồ sơ của đơn vị chấm theo bộ mặc định (ADR-052). */
+  async resetAxes(actor: Actor, unitId: string): Promise<AxisDefinition[]> {
+    const unit = await this.requireUnit(unitId);
+    const before = await this.axisConfig.findSet(unitId);
+    if (before.length === 0) throw new ConflictException(`${unit.name} chưa có bộ trục riêng`);
+    await this.assertNoInFlight(unitId);
+    await this.axisConfig.replaceSet(unitId, []);
+    await this.audit.record({
+      action: 'unit-evaluation.axes.reset',
+      outcome: 'SUCCESS',
+      targetType: 'unit_axis',
+      targetId: unitId,
+      details: { set: unit.code, before: before.map((a) => ({ code: a.code, max: a.maxPoints, active: a.active })) },
+    });
+    return this.axisConfig.findSet(null);
+  }
+
+  /** Bộ trục áp cho hồ sơ của đơn vị: bộ riêng nếu có, không thì bộ mặc định. */
+  private async axesFor(unitId: string): Promise<AxisDefinition[]> {
+    const own = await this.axisConfig.findSet(unitId);
+    return own.length > 0 ? own : this.axisConfig.findSet(null);
+  }
+
+  private async requireUnit(unitId: string): Promise<UnitInfo> {
+    const unit = (await this.directory.units()).find((u) => u.id === unitId);
+    if (!unit) throw new NotFoundException(`Không tìm thấy đơn vị: ${unitId}`);
+    return unit;
+  }
+
+  /** Hồ sơ dùng bộ trục này (đơn vị có bộ riêng, hoặc mọi đơn vị chưa có bộ riêng khi sửa bộ mặc định) không được đang chờ. */
+  private async assertNoInFlight(unitId: string | null): Promise<void> {
+    const own = new Set(await this.axisConfig.unitsWithOwnSet());
+    const usesSet = (u: string) => (unitId === null ? !own.has(u) : u === unitId);
+    for (const period of (await this.periods.findAll()).filter((p) => p.type === 'YEAR' && p.status === 'OPEN')) {
+      const inFlight = (await this.evaluations.findByPeriod(period.id)).filter((e) => (e.status === 'SELF_SUBMITTED' || e.status === 'REVIEWED') && usesSet(e.unitId));
+      if (inFlight.length > 0) {
+        throw new ConflictException(`Kỳ ${period.label} còn ${inFlight.length} hồ sơ tập thể dùng bộ trục này đang chờ thẩm định hoặc phê duyệt; hãy hoàn tất hoặc trả lại trước khi đổi trục chấm điểm`);
+      }
+    }
   }
 
   /** Tạo hồ sơ cho mọi đơn vị trong kỳ năm; đơn vị đã có hồ sơ được giữ nguyên. */
@@ -204,7 +275,7 @@ export class UnitEvaluationService {
     this.assertOpen(period);
     this.assertStatus(evaluation, ['PLANNED']);
     this.assertHead(actor, unit);
-    const scores = resolveScores(await this.axisConfig.findAll(), input);
+    const scores = resolveScores(await this.axesFor(unit.id), input);
 
     const updated = await this.evaluations.update(id, {
       status: 'SELF_SUBMITTED',
@@ -232,7 +303,7 @@ export class UnitEvaluationService {
     this.assertOpen(period);
     this.assertStatus(evaluation, ['SELF_SUBMITTED']);
     await this.assertAuthority(actor, unit, 'reviewer', access, 'thẩm định hồ sơ của');
-    const scores = resolveScores(await this.axisConfig.findAll(), input);
+    const scores = resolveScores(await this.axesFor(unit.id), input);
 
     const [rows, units] = await Promise.all([this.evaluations.findByPeriod(period.id), this.directory.units()]);
     const pending = units
@@ -429,7 +500,10 @@ export class UnitEvaluationService {
   private async context(period: PeriodModel, rows: UnitEvaluationModel[], units: UnitInfo[]) {
     // Việc đột xuất tính ngoài số nhiệm vụ giao ban đầu (Điều 18.1.d), nên không vào số liệu tham chiếu của tập thể.
     const works = (await this.work.collect(period)).filter((w) => !isAdHocCode(w.catalogItemCode));
-    const axes = await this.axisConfig.findAll();
+    const defaultAxes = await this.axisConfig.findSet(null);
+    const ownAxes = new Map<string, AxisDefinition[]>();
+    for (const unitId of await this.axisConfig.unitsWithOwnSet()) ownAxes.set(unitId, await this.axisConfig.findSet(unitId));
+    const axesOf = (unitId: string): AxisDefinition[] => ownAxes.get(unitId) ?? defaultAxes;
     const openComplaints = await this.complaints.openCounts(period.id);
     const unitByPerson = new Map<string, string>();
     for (const u of units) for (const p of u.memberPersonIds) unitByPerson.set(p, u.id);
@@ -460,7 +534,7 @@ export class UnitEvaluationService {
       ...rows.flatMap((r) => (r.rating && r.unitId !== unit.id && isBan.get(r.unitId) === (unit.parentId === null) ? [r.rating] : [])),
       proposed,
     ];
-    return { metricsOf, ratingOf, decidedWith, units, axes, openComplaints };
+    return { metricsOf, ratingOf, decidedWith, units, axesOf, openComplaints };
   }
 
   private view(
@@ -491,7 +565,7 @@ export class UnitEvaluationService {
       const due = deadlineWarning(deadline);
       if (due) warnings.push(due);
     }
-    const active = ctx.axes.filter((a) => a.active).sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    const active = ctx.axesOf(unit.id).filter((a) => a.active).sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
     return {
       evaluation,
       period,

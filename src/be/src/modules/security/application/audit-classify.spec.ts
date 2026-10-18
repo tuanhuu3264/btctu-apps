@@ -95,6 +95,7 @@ const EXPECTED: Record<string, [string, string]> = {
   'unit-complaint.verify': ['evaluation', 'APPROVE'],
   'unit-evaluation.approve': ['evaluation', 'APPROVE'],
   'unit-evaluation.axes.update': ['evaluation', 'UPDATE'],
+  'unit-evaluation.axes.reset': ['evaluation', 'UPDATE'],
   'unit-evaluation.generate': ['evaluation', 'CREATE'],
   'unit-evaluation.remind': ['evaluation', 'OTHER'],
   'unit-evaluation.return': ['evaluation', 'APPROVE'],

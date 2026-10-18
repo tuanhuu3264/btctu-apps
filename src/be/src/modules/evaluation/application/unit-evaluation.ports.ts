@@ -15,9 +15,15 @@ export abstract class UnitDirectory {
   abstract units(): Promise<UnitInfo[]>;
 }
 
-/** Cấu hình các trục chấm điểm tập thể (ADR-036). */
+/**
+ * Cấu hình các trục chấm điểm tập thể (ADR-036), theo bộ (ADR-052): `unitId` null là bộ mặc định (hồ sơ của Ban và phòng
+ * chưa có bộ riêng), còn lại là bộ riêng của một đơn vị.
+ */
 export abstract class UnitAxisRepository {
-  abstract findAll(): Promise<AxisDefinition[]>;
-  /** Thay toàn bộ danh sách trục. */
-  abstract replaceAll(axes: readonly AxisDefinition[]): Promise<void>;
+  /** Các trục của một bộ, kể cả trục đã tắt; rỗng nếu đơn vị chưa có bộ riêng. */
+  abstract findSet(unitId: string | null): Promise<AxisDefinition[]>;
+  /** Đơn vị đã có bộ trục riêng. */
+  abstract unitsWithOwnSet(): Promise<string[]>;
+  /** Thay toàn bộ một bộ trục; danh sách rỗng với một đơn vị là bỏ bộ riêng để dùng lại bộ mặc định. */
+  abstract replaceSet(unitId: string | null, axes: readonly AxisDefinition[]): Promise<void>;
 }

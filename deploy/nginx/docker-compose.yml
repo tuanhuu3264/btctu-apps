@@ -1,0 +1,33 @@
+# Nginx chạy thử trước ứng dụng đang chạy trên máy chủ (BE cổng 4000, FE cổng 3000), qua host.docker.internal.
+# Chạy: docker compose -f deploy/nginx/docker-compose.yml up -d     (xem deploy/nginx/README.md)
+# Cổng đổi được: KPI_HTTP_PORT, KPI_HTTPS_PORT (mặc định 80 và 443; đổi cổng HTTPS thì chuyển hướng HTTP vẫn trỏ cổng 443).
+name: kpi-proxy
+services:
+  # Chạy một lần: sinh chứng chỉ tự ký vào ./certs nếu chưa có fullchain.pem và privkey.pem. Chứng chỉ thật thì đặt hai tệp này, bước này bỏ qua.
+  certs:
+    image: alpine/openssl:3.3.2
+    entrypoint: ["/bin/sh", "/gen-selfsigned.sh"]
+    environment:
+      CERT_CN: ${CERT_CN:-localhost}
+      CERT_SAN: ${CERT_SAN:-DNS:localhost,DNS:kpi.example.vn,IP:127.0.0.1}
+    volumes:
+      - ./gen-selfsigned.sh:/gen-selfsigned.sh:ro
+      - ./certs:/certs
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: kpi-nginx
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    ports:
+      - "${KPI_HTTP_PORT:-80}:80"
+      - "${KPI_HTTPS_PORT:-443}:443"
+    # Linux không có sẵn host.docker.internal (Docker Desktop thì có); dòng này thêm cho cả hai.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./snippets:/etc/nginx/snippets:ro
+      - ./certs:/etc/nginx/certs:ro
+    restart: unless-stopped

@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Donut, HBars, LineChart, StackBar } from '@/components/charts';
 import type { Segment } from '@/components/charts';
-import { AttentionPanel, MODE_TEXT, MyResultsPanel, UnitLatePanel } from '@/components/dashboard-panels';
+import { AttentionPanel, EarlyWarningPanel, MeetingPanel, MODE_TEXT, ProjectWarningPanel, MyResultsPanel, UnitLatePanel } from '@/components/dashboard-panels';
 import type { DashboardMode } from '@/components/dashboard-panels';
 import type { AssignmentState, Deadline, Period, PeriodReport, SearchResult, Trend } from '@/lib/api';
 import { dateText, num, STATE_COLORS, STATE_LABELS } from '@/lib/labels';
@@ -221,6 +221,9 @@ function ResultsPanel({ periods, report, mode, canReadAllTasks, canTasks, versio
 
 interface Props {
   canTasks: boolean;
+  canProjects: boolean;
+  canMeetings: boolean;
+  canReadAllProjects: boolean;
   canReadAllTasks: boolean;
   canReviews: boolean;
   mode: DashboardMode;
@@ -237,7 +240,7 @@ const timeText = (d: Date) => d.toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho
  * Trang Tổng quan (ADR-027): mỗi khối chỉ hiện khi người dùng có quyền tương ứng. Tự làm mới mỗi phút khi tab đang mở
  * và ngay khi người dùng quay lại tab; có nút "Tải lại" để làm mới tay.
  */
-export default function DashboardView({ canTasks, canReadAllTasks, canReviews, mode, myPersonId, deadline, periods, report }: Props) {
+export default function DashboardView({ canTasks, canProjects, canMeetings, canReadAllProjects, canReadAllTasks, canReviews, mode, myPersonId, deadline, periods, report }: Props) {
   const router = useRouter();
   const [version, setVersion] = useState(0);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -277,6 +280,9 @@ export default function DashboardView({ canTasks, canReadAllTasks, canReviews, m
         <Typography.Text type="secondary">{MODE_TEXT[mode].hint}</Typography.Text>
       </Space>
       <AttentionPanel version={version} report={report} deadline={deadline} canTeam={mode !== 'CA_NHAN' && canTasks} canReviews={canReviews} />
+      {canTasks && <EarlyWarningPanel scope={mode === 'CA_NHAN' ? 'mine' : canReadAllTasks ? 'all' : 'team'} version={version} />}
+      {canProjects && <ProjectWarningPanel scope={mode === 'CA_NHAN' ? 'mine' : canReadAllProjects ? 'all' : 'team'} version={version} />}
+      {canMeetings && <MeetingPanel version={version} />}
       {canTasks && <TasksPanel version={version} />}
       {mode === 'CA_NHAN' && <MyResultsPanel report={report} myPersonId={myPersonId} />}
       {(report || periods.length > 0) && <ResultsPanel periods={periods} report={report} mode={mode} canReadAllTasks={canReadAllTasks} canTasks={canTasks} version={version} />}

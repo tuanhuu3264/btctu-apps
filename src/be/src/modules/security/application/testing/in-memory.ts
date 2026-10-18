@@ -5,6 +5,7 @@ import { GENESIS_HASH } from '../audit.model.js';
 import {
   AccountRepository,
   AuditLogRepository,
+  MfaRepository,
   PasswordHasher,
   RoleAssignmentRepository,
   SessionRepository,
@@ -13,6 +14,7 @@ import type {
   AccountModel,
   AccountStatus,
   LoginState,
+  MfaModel,
   NewAccount,
   NewSession,
   SessionModel,
@@ -84,7 +86,7 @@ export class InMemoryAccounts extends AccountRepository {
 export class InMemorySessions extends SessionRepository {
   rows: SessionModel[] = [];
   async create(data: NewSession) {
-    const row: SessionModel = { ...data, id: `s${this.rows.length + 1}`, revokedAt: null };
+    const row: SessionModel = { ...data, lastActiveAt: data.lastActiveAt ?? new Date(), id: `s${this.rows.length + 1}`, revokedAt: null };
     this.rows.push(row);
     return row;
   }
@@ -94,6 +96,10 @@ export class InMemorySessions extends SessionRepository {
   async revoke(tokenHash: string, at: Date) {
     const s = this.rows.find((r) => r.tokenHash === tokenHash);
     if (s && !s.revokedAt) s.revokedAt = at;
+  }
+  async touch(tokenHash: string, at: Date) {
+    const s = this.rows.find((r) => r.tokenHash === tokenHash);
+    if (s && !s.revokedAt) s.lastActiveAt = at;
   }
   async revokeAllForAccount(accountId: string, at: Date) {
     for (const s of this.rows) if (s.accountId === accountId && !s.revokedAt) s.revokedAt = at;
@@ -148,5 +154,28 @@ export class InMemoryAuditLog extends AuditLogRepository {
   }
   actions() {
     return this.rows.map((r) => r.action);
+  }
+}
+
+export class InMemoryMfa extends MfaRepository {
+  rows: MfaModel[] = [];
+  async find(accountId: string) {
+    return this.rows.find((r) => r.accountId === accountId) ?? null;
+  }
+  async savePending(accountId: string, secretEnc: string) {
+    this.rows = this.rows.filter((r) => r.accountId !== accountId);
+    this.rows.push({ accountId, secretEnc, enabled: false, recoveryHashes: [], lastStep: null, enabledAt: null });
+  }
+  async enable(accountId: string, data: { recoveryHashes: string[]; lastStep: number; at: Date }) {
+    Object.assign(this.rows.find((r) => r.accountId === accountId)!, { enabled: true, recoveryHashes: data.recoveryHashes, lastStep: data.lastStep, enabledAt: data.at });
+  }
+  async setLastStep(accountId: string, step: number) {
+    this.rows.find((r) => r.accountId === accountId)!.lastStep = step;
+  }
+  async setRecoveryHashes(accountId: string, hashes: string[]) {
+    this.rows.find((r) => r.accountId === accountId)!.recoveryHashes = hashes;
+  }
+  async remove(accountId: string) {
+    this.rows = this.rows.filter((r) => r.accountId !== accountId);
   }
 }

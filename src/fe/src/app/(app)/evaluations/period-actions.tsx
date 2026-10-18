@@ -1,7 +1,8 @@
 'use client';
 
-import { PlusOutlined, SyncOutlined, UserAddOutlined } from '@ant-design/icons';
+import { PlusOutlined, SettingOutlined, SyncOutlined, UserAddOutlined } from '@ant-design/icons';
 import { Alert, Button, Descriptions, Form, InputNumber, List, Modal, Popconfirm, Select } from 'antd';
+import Link from 'next/link';
 import { useState } from 'react';
 import { apiCall } from '@/lib/client';
 import { useAction } from '@/lib/use-action';
@@ -84,6 +85,9 @@ export default function PeriodActions({ periodId, names, periodOpen, canManagePe
           <Button icon={<PlusOutlined />} onClick={() => setPeriodModal(true)}>
             Tạo kỳ
           </Button>
+          <Link href="/evaluations/general-criteria">
+            <Button icon={<SettingOutlined />}>Bảng tiêu chí chung</Button>
+          </Link>
           <Modal
             title="Tạo kỳ đánh giá"
             open={periodModal}

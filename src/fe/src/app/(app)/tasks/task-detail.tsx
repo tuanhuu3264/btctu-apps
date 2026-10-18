@@ -186,6 +186,7 @@ function InfoTab({ view, names, positionLabel, canEdit, onEdit, onDecided }: { v
                 <Tag color={STATE_COLORS[view.state]}>{STATE_LABELS[view.state]}</Tag>
                 {view.summary.lateCount > 0 && <Tag color="orange">chậm {view.summary.lateCount}</Tag>}
                 {view.summary.reworkCount > 0 && <Tag color="volcano">chưa đạt {view.summary.reworkCount}</Tag>}
+                {view.summary.waivedLateCount + view.summary.waivedReworkCount > 0 && <Tag color="green">miễn trừ {view.summary.waivedLateCount + view.summary.waivedReworkCount}</Tag>}
               </>
             ),
           },
@@ -233,6 +234,13 @@ function InfoTab({ view, names, positionLabel, canEdit, onEdit, onDecided }: { v
               <>
                 <Tag>{PROGRESS_LABELS[p.status]}</Tag>
                 {p.decisionNote && <span style={{ color: '#888' }}>{p.decisionNote}</span>}
+                {view.waivers
+                  .filter((w) => w.progressId === p.id && w.revokedAt === null)
+                  .map((w) => (
+                    <div key={w.id} style={{ color: '#389e0d' }}>
+                      Miễn trừ ({w.kind === 'LATE' ? 'chậm' : 'chưa đạt'}): {w.reason}
+                    </div>
+                  ))}
               </>
             ),
           },

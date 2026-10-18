@@ -14,12 +14,14 @@ import type {
   NewAttachment,
   NewComment,
   NewProgress,
+  NewWaiver,
   NewWorkTask,
   ProgressModel,
   ProgressPatch,
+  WaiverModel,
   WorkTaskModel,
 } from '../tasking.model.js';
-import { AssignmentRepository, AttachmentRepository, CatalogDirectory, CommentRepository, ConsultantRepository, FileStorage, OrgDirectory, ProgressRepository, RecurringTemplateRepository, WorkTaskRepository } from '../tasking.ports.js';
+import { AssignmentRepository, AttachmentRepository, CatalogDirectory, CommentRepository, ConsultantRepository, FileStorage, OrgDirectory, ProgressRepository, RecurringTemplateRepository, WaiverRepository, WorkTaskRepository } from '../tasking.ports.js';
 import type { CatalogItemInfo } from '../tasking.ports.js';
 import { CollaborationService } from '../collaboration.service.js';
 import type { NewRecurringTemplate, RecurringTemplateModel, RecurringTemplatePatch } from '../recurring.model.js';
@@ -69,6 +71,9 @@ export class InMemoryAssignments extends AssignmentRepository {
   async findByApprover(personId: string) {
     return this.rows.filter((a) => a.approverPersonId === personId).map((a) => ({ ...a }));
   }
+  async findByProject(projectId: string) {
+    return this.rows.filter((a) => a.projectId === projectId).map((a) => ({ ...a }));
+  }
   async findRecurringKeys(templateId: string) {
     return new Set(this.rows.flatMap((a) => (a.recurringTemplateId === templateId && a.recurringKey ? [a.recurringKey] : [])));
   }
@@ -96,6 +101,7 @@ export class InMemoryAssignments extends AssignmentRepository {
       recurringTemplateId: data.recurringTemplateId ?? null,
       recurringKey: data.recurringKey ?? null,
       positionId: data.positionId ?? null,
+      projectId: data.projectId ?? null,
       id: nextId('as'),
       status: data.status ?? 'OPEN',
       createdAt: new Date(clockRef.current),
@@ -218,6 +224,23 @@ export class InMemoryProgress extends ProgressRepository {
   }
 }
 
+export class InMemoryWaivers extends WaiverRepository {
+  rows: WaiverModel[] = [];
+  async findByProgress(progressIds: readonly string[]) {
+    return this.rows.filter((w) => progressIds.includes(w.progressId)).map((w) => ({ ...w }));
+  }
+  async create(data: NewWaiver) {
+    const row: WaiverModel = { ...data, id: nextId('wv'), revokedBy: null, revokedAt: null, revokeNote: null };
+    this.rows.push(row);
+    return { ...row };
+  }
+  async revoke(id: string, by: string, at: Date, note: string) {
+    const row = this.rows.find((w) => w.id === id)!;
+    Object.assign(row, { revokedBy: by, revokedAt: at, revokeNote: note });
+    return { ...row };
+  }
+}
+
 export class InMemoryRecurringTemplates extends RecurringTemplateRepository {
   rows: RecurringTemplateModel[] = [];
   async findById(id: string) {
@@ -312,6 +335,7 @@ export async function buildTasking() {
     tasks: new InMemoryWorkTasks(),
     assignments: new InMemoryAssignments(),
     progress: new InMemoryProgress(),
+    waivers: new InMemoryWaivers(),
     consultants: new InMemoryConsultants(),
     comments: new InMemoryComments(),
     attachments: new InMemoryAttachments(),
@@ -335,6 +359,7 @@ export async function buildTasking() {
       { provide: Clock, useValue: clock },
       { provide: AssignmentRepository, useValue: repos.assignments },
       { provide: ProgressRepository, useValue: repos.progress },
+      { provide: WaiverRepository, useValue: repos.waivers },
       { provide: WorkTaskRepository, useValue: repos.tasks },
       { provide: ConsultantRepository, useValue: repos.consultants },
       { provide: CommentRepository, useValue: repos.comments },

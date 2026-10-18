@@ -31,6 +31,16 @@ import { CreateAccessReview1762400000000 } from './1762400000000-CreateAccessRev
 import { AdHocAndRecurringWork1762500000000 } from './1762500000000-AdHocAndRecurringWork.js';
 import { ConcurrentAssignment1762600000000 } from './1762600000000-ConcurrentAssignment.js';
 import { PhieuTheoViTri1762700000000 } from './1762700000000-PhieuTheoViTri.js';
+import { AccountMfa1762800000000 } from './1762800000000-AccountMfa.js';
+import { ProjectModule1762900000000 } from './1762900000000-ProjectModule.js';
+import { Meeting1763000000000 } from './1763000000000-Meeting.js';
+import { MeetingRoom1763100000000 } from './1763100000000-MeetingRoom.js';
+import { UnitAxisPerUnit1763200000000 } from './1763200000000-UnitAxisPerUnit.js';
+import { SupportStaff1763300000000 } from './1763300000000-SupportStaff.js';
+import { GeneralCriteria1763400000000 } from './1763400000000-GeneralCriteria.js';
+import { RatingEvents1763500000000 } from './1763500000000-RatingEvents.js';
+import { ProgressWaiver1763600000000 } from './1763600000000-ProgressWaiver.js';
+import { SessionIdle1763700000000 } from './1763700000000-SessionIdle.js';
 import { TaskCollaboration1761300000000 } from './1761300000000-TaskCollaboration.js';
 
 /** Danh sách migration theo thứ tự. Thêm migration mới vào cuối mảng. */
@@ -69,4 +79,14 @@ export const migrations = [
   AdHocAndRecurringWork1762500000000,
   ConcurrentAssignment1762600000000,
   PhieuTheoViTri1762700000000,
+  AccountMfa1762800000000,
+  ProjectModule1762900000000,
+  Meeting1763000000000,
+  MeetingRoom1763100000000,
+  UnitAxisPerUnit1763200000000,
+  SupportStaff1763300000000,
+  GeneralCriteria1763400000000,
+  RatingEvents1763500000000,
+  ProgressWaiver1763600000000,
+  SessionIdle1763700000000,
 ];

@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { Clock } from '../../../common/clock.js';
 import { AuditService } from './audit.service.js';
-import { AccountRepository, Authenticator, PasswordHasher } from './ports.js';
+import { AccountRepository, Authenticator, MfaRepository, PasswordHasher } from './ports.js';
 import { SecurityConfig } from './security.config.js';
 import type { Credentials, CurrentAccount } from './security.model.js';
 
@@ -21,6 +21,7 @@ export class PasswordAuthenticator extends Authenticator {
     private readonly clock: Clock,
     private readonly config: SecurityConfig,
     private readonly audit: AuditService,
+    private readonly mfa: MfaRepository,
   ) {
     super();
   }
@@ -44,7 +45,9 @@ export class PasswordAuthenticator extends Authenticator {
       throw await this.fail(username, 'bad-password', account.id);
     }
 
-    if (account.failedAttempts !== 0 || account.lockedUntil) {
+    // Tài khoản có MFA: giữ bộ đếm sai cho tới khi qua cả bước nhập mã, để không đoán mã vô hạn bằng cách đăng nhập lại.
+    const mfaPending = this.config.mfaMode !== 'off' && !!(await this.mfa.find(account.id))?.enabled;
+    if (!mfaPending && (account.failedAttempts !== 0 || account.lockedUntil)) {
       await this.accounts.updateLoginState(account.id, { failedAttempts: 0, lockedUntil: null });
     }
     return { id: account.id, username: account.username, personId: account.personId };

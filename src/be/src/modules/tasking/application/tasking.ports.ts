@@ -8,9 +8,11 @@ import type {
   NewAttachment,
   NewComment,
   NewProgress,
+  NewWaiver,
   NewWorkTask,
   ProgressModel,
   ProgressPatch,
+  WaiverModel,
   WorkTaskModel,
 } from './tasking.model.js';
 import type { ParsedOkr } from '../../organization/index.js';
@@ -28,6 +30,8 @@ export abstract class AssignmentRepository {
   abstract findByApprover(personId: string): Promise<AssignmentModel[]>;
   /** Sửa nội dung, người duyệt, kết quả then chốt; khi duyệt đề xuất còn mức độ khó, số lượng, hạn. */
   abstract update(id: string, patch: AssignmentPatch): Promise<AssignmentModel>;
+  /** Việc gắn vào một đề án, dự án (ADR-050). */
+  abstract findByProject(projectId: string): Promise<AssignmentModel[]>;
   /** Các ngày lặp đã sinh việc của một mẫu (kể cả việc đã hủy), để không sinh trùng. */
   abstract findRecurringKeys(templateId: string): Promise<Set<string>>;
   /** Việc do một mẫu việc lặp sinh ra. */
@@ -80,6 +84,13 @@ export abstract class ProgressRepository {
   abstract findByAssignments(assignmentIds: readonly string[]): Promise<ProgressModel[]>;
   abstract create(data: NewProgress): Promise<ProgressModel>;
   abstract update(id: string, patch: ProgressPatch): Promise<ProgressModel>;
+}
+
+export abstract class WaiverRepository {
+  /** Mọi miễn trừ (kể cả đã thu hồi) của các lần báo cáo đã cho. */
+  abstract findByProgress(progressIds: readonly string[]): Promise<WaiverModel[]>;
+  abstract create(data: NewWaiver): Promise<WaiverModel>;
+  abstract revoke(id: string, by: string, at: Date, note: string): Promise<WaiverModel>;
 }
 
 /** Cổng sang mô-đun organization: ai là cấp trên, ai là cấp dưới của một cán bộ tại thời điểm này. */

@@ -9,7 +9,9 @@ import { DocumentsModule } from './modules/documents/index.js';
 import { EvaluationModule } from './modules/evaluation/evaluation.module.js';
 import { IntegrationModule } from './modules/integration/integration.module.js';
 import { NotificationsModule } from './modules/notifications/index.js';
+import { MeetingModule } from './modules/meeting/index.js';
 import { OrganizationModule } from './modules/organization/organization.module.js';
+import { ProjectModule } from './modules/project/index.js';
 import { ReportingModule } from './modules/reporting/reporting.module.js';
 import { ScoringModule } from './modules/scoring/scoring.module.js';
 import { TaskingModule } from './modules/tasking/tasking.module.js';
@@ -23,6 +25,8 @@ import { SecurityModule } from './modules/security/index.js';
     CatalogModule,
     EvaluationModule,
     TaskingModule,
+    ProjectModule,
+    MeetingModule,
     DocumentsModule,
     NotificationsModule,
     ScoringModule,

@@ -22,6 +22,7 @@ export const PERMISSIONS = [
   'account:read',
   'account:disable',
   'account:link-person',
+  'account:mfa-reset',
   'role:assign',
   'role:read',
   'audit:read',
@@ -50,6 +51,11 @@ export const PERMISSIONS = [
   'report:draft',
   'document:read',
   'document:manage',
+  'project:read-all',
+  'project:create',
+  'project:approve',
+  'meeting:read-all',
+  'meeting:manage-rooms',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 

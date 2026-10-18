@@ -272,6 +272,25 @@ export class DecisionDto {
   @IsOptional()
   @IsBoolean()
   majorError?: boolean;
+
+  /** Nguyên nhân khách quan khiến lần này bị tính chậm hoặc chưa đạt; có thì miễn trừ ngay khi duyệt (ADR-056). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  objectiveReason?: string;
+}
+
+export class WaiverDto {
+  /** Nguyên nhân khách quan và căn cứ xác nhận, ít nhất 10 ký tự. */
+  @IsString()
+  @MaxLength(2000)
+  reason: string;
+}
+
+export class RevokeWaiverDto {
+  @IsString()
+  @MaxLength(2000)
+  note: string;
 }
 
 export class FileSearchQueryDto {

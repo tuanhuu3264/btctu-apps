@@ -45,12 +45,15 @@ export interface AssignmentModel {
   recurringKey: string | null;
   /** Vị trí mà việc được giao cho, để việc chỉ tính vào phiếu của vị trí đó khi người nhận kiêm nhiệm (ADR-047). null: chưa xác định, hiểu là vị trí chính. */
   positionId: string | null;
+  /** Đề án, dự án mà việc này góp phần (ADR-050); null nếu không thuộc đề án nào. */
+  projectId: string | null;
 }
 export type NewAssignment = Omit<
   AssignmentModel,
-  'id' | 'status' | 'createdAt' | 'approverPersonId' | 'okrKeyResult' | 'source' | 'title' | 'recurringTemplateId' | 'recurringKey' | 'positionId'
+  'id' | 'status' | 'createdAt' | 'approverPersonId' | 'okrKeyResult' | 'source' | 'title' | 'recurringTemplateId' | 'recurringKey' | 'positionId' | 'projectId'
 > & {
   positionId?: string | null;
+  projectId?: string | null;
   approverPersonId?: string | null;
   okrKeyResult?: string | null;
   source?: AssignmentSource;
@@ -62,7 +65,7 @@ export type NewAssignment = Omit<
 };
 
 /** Phần được sửa của một việc: nội dung, người duyệt, kết quả then chốt; khi duyệt đề xuất còn mức độ khó (mã ảo), số lượng và hạn. */
-export type AssignmentPatch = Partial<Pick<AssignmentModel, 'note' | 'approverPersonId' | 'okrKeyResult' | 'catalogItemCode' | 'plannedQuantity' | 'dueDate' | 'title' | 'assignerAccountId'>>;
+export type AssignmentPatch = Partial<Pick<AssignmentModel, 'note' | 'approverPersonId' | 'okrKeyResult' | 'catalogItemCode' | 'plannedQuantity' | 'dueDate' | 'title' | 'assignerAccountId' | 'projectId'>>;
 
 export const MAX_CONTENT_LENGTH = 4000;
 export const MAX_CONSULTANTS = 10;
@@ -149,6 +152,25 @@ export interface ProgressModel {
 export type NewProgress = Pick<ProgressModel, 'assignmentId' | 'quantity' | 'completedOn' | 'evidence' | 'reportedBy'>;
 export type ProgressPatch = Partial<Pick<ProgressModel, 'status' | 'decidedBy' | 'decidedAt' | 'decisionNote' | 'majorError'>>;
 
+/**
+ * Miễn trừ do nguyên nhân khách quan (Nghị định 335/2025 Điều 14.2.b, c): cấp trên xác nhận kết quả của việc quyết định một lần
+ * chậm hoặc một lần chưa đạt không bị trừ 25%. Lần báo cáo đã xử lý bị khóa nên miễn trừ nằm ở bản ghi riêng; thu hồi thì giữ
+ * bản ghi, đánh dấu đã thu hồi (ADR-056).
+ */
+export type WaiverKind = 'LATE' | 'REWORK';
+export interface WaiverModel {
+  id: string;
+  progressId: string;
+  kind: WaiverKind;
+  reason: string;
+  grantedBy: string;
+  grantedAt: Date;
+  revokedBy: string | null;
+  revokedAt: Date | null;
+  revokeNote: string | null;
+}
+export type NewWaiver = Pick<WaiverModel, 'progressId' | 'kind' | 'reason' | 'grantedBy' | 'grantedAt'>;
+
 /** Số liệu suy ra từ các lần báo cáo của một việc. */
 export interface ProgressSummary {
   /** Tổng số lượng đã được cấp trên xác nhận. */
@@ -159,25 +181,47 @@ export interface ProgressSummary {
   reworkCount: number;
   /** Số lần báo cáo được xác nhận mà ngày hoàn thành sau hạn (một lần chậm). */
   lateCount: number;
+  /** Số lần chậm và chưa đạt đã được miễn trừ: không nằm trong `lateCount`, `reworkCount` (không bị trừ). */
+  waivedLateCount: number;
+  waivedReworkCount: number;
   done: boolean;
 }
 
-export function summarize(assignment: Pick<AssignmentModel, 'plannedQuantity' | 'dueDate'>, progress: readonly ProgressModel[]): ProgressSummary {
+/** Lần báo cáo này là một lần chậm (đã xác nhận mà ngày hoàn thành sau hạn) hay một lần chưa đạt (bị từ chối vì sai sót lớn), nếu có. */
+export function penaltyOf(assignment: Pick<AssignmentModel, 'dueDate'>, progress: Pick<ProgressModel, 'status' | 'completedOn' | 'majorError'>): WaiverKind | null {
+  if (progress.status === 'CONFIRMED' && progress.completedOn > assignment.dueDate) return 'LATE';
+  if (progress.status === 'REJECTED' && progress.majorError) return 'REWORK';
+  return null;
+}
+
+/** `waivedProgressIds`: các lần báo cáo đang được miễn trừ (chưa thu hồi); lần đó không tính vào số lần chậm, chưa đạt. */
+export function summarize(
+  assignment: Pick<AssignmentModel, 'plannedQuantity' | 'dueDate'>,
+  progress: readonly ProgressModel[],
+  waivedProgressIds: ReadonlySet<string> = new Set(),
+): ProgressSummary {
   let confirmedQuantity = 0;
   let pendingQuantity = 0;
   let reworkCount = 0;
   let lateCount = 0;
+  let waivedLateCount = 0;
+  let waivedReworkCount = 0;
   for (const p of progress) {
-    if (p.status === 'CONFIRMED') {
-      confirmedQuantity += p.quantity;
-      if (p.completedOn > assignment.dueDate) lateCount += 1;
-    } else if (p.status === 'REPORTED') {
-      pendingQuantity += p.quantity;
-    } else if (p.majorError) {
+    if (p.status === 'CONFIRMED') confirmedQuantity += p.quantity;
+    else if (p.status === 'REPORTED') pendingQuantity += p.quantity;
+    const penalty = penaltyOf(assignment, p);
+    if (penalty === null) continue;
+    const waived = waivedProgressIds.has(p.id);
+    if (penalty === 'LATE') {
+      if (waived) waivedLateCount += 1;
+      else lateCount += 1;
+    } else if (waived) {
+      waivedReworkCount += 1;
+    } else {
       reworkCount += 1;
     }
   }
-  return { confirmedQuantity, pendingQuantity, reworkCount, lateCount, done: confirmedQuantity >= assignment.plannedQuantity };
+  return { confirmedQuantity, pendingQuantity, reworkCount, lateCount, waivedLateCount, waivedReworkCount, done: confirmedQuantity >= assignment.plannedQuantity };
 }
 
 export function stateOf(assignment: Pick<AssignmentModel, 'status' | 'dueDate'>, summary: ProgressSummary, today: string): AssignmentState {

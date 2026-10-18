@@ -3,13 +3,15 @@ import ChangeHistoryButton from '@/components/change-history';
 import PageTitle from '@/components/page-title';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { fetchCatalogVersion, fetchEvaluation, fetchLeave, fetchMe, fetchOrgTree, ForbiddenError, UnauthorizedError } from '@/lib/api';
-import type { CatalogItem, CatalogTask, EvaluationDetail, LeaveMonth, OrgUnit } from '@/lib/api';
+import { fetchCatalogVersion, fetchEvaluation, fetchLeave, fetchMe, fetchOrgTree, fetchRatingEvents, ForbiddenError, UnauthorizedError } from '@/lib/api';
+import type { CatalogItem, CatalogTask, EvaluationDetail, LeaveMonth, OrgUnit, RatingEvent } from '@/lib/api';
 import { peopleIndex, positionIndex } from '@/lib/labels';
 import { inScope, placementOf } from '@/lib/scope';
 import EvaluationActions from './evaluation-actions';
 import EvaluationView from './evaluation-view';
 import LeaveEditor from './leave-editor';
+import RatingEvents from './rating-events';
+import ScoreInsight from './score-insight';
 
 // Dữ liệu lấy từ backend mỗi lần truy cập, không dựng sẵn lúc build.
 export const dynamic = 'force-dynamic';
@@ -64,6 +66,10 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
     leave = await fetchLeave(detail.evaluation.personId, detail.period.year ?? Number(detail.period.label)).catch(() => null);
   }
 
+  // Kỷ luật, kết luận trong năm của kỳ (ADR-055); máy chủ chỉ trả cho cán bộ, cấp trên và người xem toàn bộ.
+  const eventYear = detail.period.year ?? Number(detail.period.label.slice(0, 4));
+  const ratingEvents: RatingEvent[] = await fetchRatingEvents(detail.evaluation.personId, eventYear).catch(() => []);
+
   const people = peopleIndex(tree);
   const nameOf = (personId: string | null) => (personId ? (people.get(personId)?.fullName ?? personId) : '(chưa xác định)');
   const { evaluation: ev, period, tasks } = detail;
@@ -84,6 +90,7 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
         <ChangeHistoryButton targetType="evaluation" targetId={ev.id} title={subject?.fullName ?? 'Hồ sơ'} canView={me.permissions.includes('audit:read')} size="middle" />
       </div>
       <EvaluationView detail={detail} subject={subject} reviewerName={nameOf(detail.reviewerPersonId)} approverName={nameOf(detail.approverPersonId)} />
+      {period.type !== 'YEAR' && !detail.isSupport && tasks.length > 0 && <ScoreInsight evaluationId={ev.id} />}
       <EvaluationActions
         evaluationId={ev.id}
         status={ev.status}
@@ -92,6 +99,13 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
         tasks={tasks}
         selfGeneralScore={ev.selfGeneralScore}
         isLeader={detail.isLeader}
+        isSupport={detail.isSupport}
+        selfSupport={ev.selfSupport}
+        generalCriteria={detail.generalCriteria}
+        selfGeneral={ev.selfGeneral?.items ?? null}
+        previous={detail.previous}
+        forcedItems={detail.forcedItems}
+        yearConditions={detail.yearConditions}
         isYear={period.type === 'YEAR'}
         yearEnough={detail.yearAverage?.enough ?? true}
         catalogItems={catalogItems}
@@ -100,6 +114,7 @@ export default async function EvaluationPage({ params }: { params: Promise<{ id:
         suggestedUnitResult={detail.leadershipSuggestion?.unitResult ?? null}
         suggestedSolidarity={detail.leadershipSuggestion?.solidarity != null ? { value: detail.leadershipSuggestion.solidarity, reason: detail.leadershipSuggestion.solidarityReason ?? '' } : null}
       />
+      <RatingEvents personId={ev.personId} year={eventYear} events={ratingEvents} canEdit={me.permissions.includes('evaluation:period-manage') && period.status === 'OPEN'} />
       {leave && detail.yearAverage && (
         <LeaveEditor personId={ev.personId} year={period.year ?? Number(period.label)} initial={leave} approvedMonths={detail.yearAverage.months.map((m) => m.month)} />
       )}

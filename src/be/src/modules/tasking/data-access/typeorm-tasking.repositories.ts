@@ -11,9 +11,11 @@ import type {
   NewAttachment,
   NewComment,
   NewProgress,
+  NewWaiver,
   NewWorkTask,
   ProgressModel,
   ProgressPatch,
+  WaiverModel,
   WorkTaskModel,
 } from '../application/tasking.model.js';
 import type { NewRecurringTemplate, RecurringTemplateModel, RecurringTemplatePatch } from '../application/recurring.model.js';
@@ -24,6 +26,7 @@ import {
   ConsultantRepository,
   ProgressRepository,
   RecurringTemplateRepository,
+  WaiverRepository,
   WorkTaskRepository,
 } from '../application/tasking.ports.js';
 import {
@@ -33,6 +36,7 @@ import {
   WorkConsultantEntity,
   RecurringTemplateEntity,
   WorkProgressEntity,
+  WorkProgressWaiverEntity,
   WorkTaskEntity,
 } from './tasking.entities.js';
 
@@ -67,6 +71,10 @@ export class TypeOrmAssignmentRepository extends AssignmentRepository {
 
   async findByApprover(personId: string): Promise<AssignmentModel[]> {
     return (await this.repo.find({ where: { approverPersonId: personId }, order: { dueDate: 'ASC', createdAt: 'ASC' } })).map(toAssignment);
+  }
+
+  async findByProject(projectId: string): Promise<AssignmentModel[]> {
+    return (await this.repo.find({ where: { projectId }, order: { dueDate: 'ASC', createdAt: 'ASC' } })).map(toAssignment);
   }
 
   async findRecurringKeys(templateId: string): Promise<Set<string>> {
@@ -160,6 +168,39 @@ export class TypeOrmProgressRepository extends ProgressRepository {
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     await this.repo.update({ id }, clean);
     return toProgress(await this.repo.findOneByOrFail({ id }));
+  }
+}
+
+const toWaiver = (e: WorkProgressWaiverEntity): WaiverModel => ({
+  id: e.id,
+  progressId: e.progressId,
+  kind: e.kind,
+  reason: e.reason,
+  grantedBy: e.grantedBy,
+  grantedAt: e.grantedAt,
+  revokedBy: e.revokedBy,
+  revokedAt: e.revokedAt,
+  revokeNote: e.revokeNote,
+});
+
+@Injectable()
+export class TypeOrmWaiverRepository extends WaiverRepository {
+  constructor(@InjectRepository(WorkProgressWaiverEntity) private readonly repo: Repository<WorkProgressWaiverEntity>) {
+    super();
+  }
+
+  async findByProgress(progressIds: readonly string[]): Promise<WaiverModel[]> {
+    if (progressIds.length === 0) return [];
+    return (await this.repo.find({ where: { progressId: In([...progressIds]) }, order: { grantedAt: 'ASC' } })).map(toWaiver);
+  }
+
+  async create(data: NewWaiver): Promise<WaiverModel> {
+    return toWaiver(await this.repo.save(this.repo.create(data)));
+  }
+
+  async revoke(id: string, by: string, at: Date, note: string): Promise<WaiverModel> {
+    await this.repo.update({ id }, { revokedBy: by, revokedAt: at, revokeNote: note });
+    return toWaiver(await this.repo.findOneByOrFail({ id }));
   }
 }
 
@@ -283,6 +324,7 @@ const toAssignment = (e: WorkAssignmentEntity): AssignmentModel => ({
   recurringTemplateId: e.recurringTemplateId,
   recurringKey: e.recurringKey,
   positionId: e.positionId,
+  projectId: e.projectId,
 });
 
 const toProgress = (e: WorkProgressEntity): ProgressModel => ({

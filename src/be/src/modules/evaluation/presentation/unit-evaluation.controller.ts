@@ -1,9 +1,9 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Put } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
 import { AuthorizationService, CurrentAccount, RequirePermission } from '../../security/index.js';
 import type { CurrentAccountModel } from '../../security/index.js';
 import type { UnitEvaluationModel } from '../application/unit-evaluation.model.js';
 import { UnitEvaluationService } from '../application/unit-evaluation.service.js';
-import type { GenerateUnitsResult, UnitAccess, UnitEvaluationView } from '../application/unit-evaluation.service.js';
+import type { AxisSetView, GenerateUnitsResult, UnitAccess, UnitEvaluationView } from '../application/unit-evaluation.service.js';
 import type { AxisDefinition } from '../application/unit-axes.js';
 import { ApproveEvaluationDto, ReplaceAxesDto, ReturnDto, UnitScoreDto } from './evaluation.dto.js';
 
@@ -28,18 +28,39 @@ export class UnitEvaluationController {
     return this.units.generate(actor, periodId);
   }
 
-  /** Các trục chấm điểm tập thể (ADR-036). Đặt trước các đường dẫn có mã để không bị coi là mã hồ sơ. */
+  /**
+   * Các trục chấm điểm tập thể (ADR-036): bộ mặc định, hoặc bộ đang áp dụng cho đơn vị `unitId` (ADR-052). Đặt trước các
+   * đường dẫn có mã để không bị coi là mã hồ sơ.
+   */
   @Get('axes')
   @RequirePermission('evaluation:read')
-  axes(): Promise<AxisDefinition[]> {
-    return this.units.axes();
+  axes(@Query('unitId', new ParseUUIDPipe({ optional: true })) unitId?: string): Promise<AxisDefinition[]> {
+    return this.units.axes(unitId ?? null);
   }
 
-  /** Văn phòng thay cấu hình trục: tổng điểm tối đa mỗi nhóm đang bật phải đúng 30 hoặc 70. */
+  /** Bộ mặc định và bộ đang áp dụng cho từng đơn vị. */
+  @Get('axis-sets')
+  @RequirePermission('evaluation:read')
+  axisSets(): Promise<AxisSetView[]> {
+    return this.units.axisSets();
+  }
+
+  /** Văn phòng thay một bộ trục (bộ mặc định khi không có `unitId`): tổng điểm tối đa mỗi nhóm đang bật phải đúng 30 hoặc 70. */
   @Put('axes')
   @RequirePermission('evaluation:period-manage')
   replaceAxes(@CurrentAccount() actor: CurrentAccountModel, @Body() dto: ReplaceAxesDto): Promise<AxisDefinition[]> {
-    return this.units.replaceAxes(actor, dto.axes.map((a) => ({ ...a, autoMetric: a.autoMetric ?? null })));
+    return this.units.replaceAxes(
+      actor,
+      dto.axes.map((a) => ({ ...a, autoMetric: a.autoMetric ?? null })),
+      dto.unitId ?? null,
+    );
+  }
+
+  /** Văn phòng bỏ bộ trục riêng của đơn vị; trả về bộ mặc định mà đơn vị sẽ dùng. */
+  @Delete('axes/:unitId')
+  @RequirePermission('evaluation:period-manage')
+  resetAxes(@CurrentAccount() actor: CurrentAccountModel, @Param('unitId', ParseUUIDPipe) unitId: string): Promise<AxisDefinition[]> {
+    return this.units.resetAxes(actor, unitId);
   }
 
   @Get('periods/:id')

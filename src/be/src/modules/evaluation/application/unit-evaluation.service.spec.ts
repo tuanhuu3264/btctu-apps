@@ -7,7 +7,7 @@ import type { Actor } from './evaluation.service.js';
 import type { Superior } from './evaluation.ports.js';
 import type { NewUnitEvaluation, UnitEvaluationModel, UnitEvaluationPatch, UnitInfo } from './unit-evaluation.model.js';
 import { UnitAxisRepository, UnitDirectory, UnitEvaluationRepository } from './unit-evaluation.ports.js';
-import { DEFAULT_AXES } from './unit-axes.js';
+import { FIXTURE_AXES } from './testing/axes-fixture.js';
 import type { AxisDefinition } from './unit-axes.js';
 import { UnitComplaintService } from './unit-complaint.service.js';
 import type { ComplaintAccess } from './unit-complaint.service.js';
@@ -62,14 +62,21 @@ class MemUnitEvals extends UnitEvaluationRepository {
   }
 }
 
-/** Cấu hình trục: mặc định rỗng nên các test cũ vẫn nhập hai số; test chấm theo trục đặt danh sách. */
+/** Cấu hình trục: bộ mặc định (`list`) rỗng nên các test cũ vẫn nhập hai số; test chấm theo trục đặt danh sách. */
 class MemAxes extends UnitAxisRepository {
   list: AxisDefinition[] = [];
-  async findAll() {
-    return this.list.map((a) => ({ ...a }));
+  /** Bộ riêng theo mã đơn vị (ADR-052). */
+  own = new Map<string, AxisDefinition[]>();
+  async findSet(unitId: string | null) {
+    return (unitId === null ? this.list : (this.own.get(unitId) ?? [])).map((a) => ({ ...a }));
   }
-  async replaceAll(axes: readonly AxisDefinition[]) {
-    this.list = axes.map((a) => ({ ...a }));
+  async unitsWithOwnSet() {
+    return [...this.own.keys()];
+  }
+  async replaceSet(unitId: string | null, axes: readonly AxisDefinition[]) {
+    if (unitId === null) this.list = axes.map((a) => ({ ...a }));
+    else if (axes.length === 0) this.own.delete(unitId);
+    else this.own.set(unitId, axes.map((a) => ({ ...a })));
   }
 }
 
@@ -343,12 +350,12 @@ describe('UnitEvaluationService (ADR-030)', () => {
 
 describe('UnitEvaluationService: chấm theo trục cấu hình (ADR-036)', () => {
   let h: H;
-  const axisInput = (value: (a: AxisDefinition) => number) => DEFAULT_AXES.map((a) => ({ code: a.code, score: value(a) }));
+  const axisInput = (value: (a: AxisDefinition) => number) => FIXTURE_AXES.map((a) => ({ code: a.code, score: value(a) }));
   const at80 = axisInput((a) => a.maxPoints * 0.8); // chung 24, kết quả 56
 
   beforeEach(async () => {
     h = await build();
-    h.axes.list = DEFAULT_AXES.map((a) => ({ ...a }));
+    h.axes.list = FIXTURE_AXES.map((a) => ({ ...a }));
     await h.service.generate(actor('boss'), h.year.id);
   });
 
@@ -407,19 +414,19 @@ describe('UnitEvaluationService: chấm theo trục cấu hình (ADR-036)', () =
 
   describe('cấu hình trục', () => {
     it('Văn phòng sửa cấu hình hợp lệ và có nhật ký; tổng sai bị từ chối', async () => {
-      const next = DEFAULT_AXES.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 4 } : a.code === 'T1' ? { ...a, maxPoints: 16 } : a));
+      const next = FIXTURE_AXES.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 4 } : a.code === 'T1' ? { ...a, maxPoints: 16 } : a));
       expect((await h.service.replaceAxes(actor('boss'), next)).find((a) => a.code === 'T1')?.maxPoints).toBe(16);
       expect(h.audit.map((a) => a.action)).toContain('unit-evaluation.axes.update');
-      await expect(h.service.replaceAxes(actor('boss'), DEFAULT_AXES.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 9 } : a)))).rejects.toThrow(/phải bằng 70/);
-      expect((await h.axes.findAll()).find((a) => a.code === 'T6')?.maxPoints).toBe(4); // cấu hình lỗi không ghi đè
+      await expect(h.service.replaceAxes(actor('boss'), FIXTURE_AXES.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 9 } : a)))).rejects.toThrow(/phải bằng 70/);
+      expect((await h.axes.findSet(null)).find((a) => a.code === 'T6')?.maxPoints).toBe(4); // cấu hình lỗi không ghi đè
     });
 
     it('không sửa được khi còn hồ sơ chờ thẩm định hoặc phê duyệt, sửa được sau khi hoàn tất', async () => {
       const id = await idOf(h, 'u-p1');
       await h.service.selfSubmit(actor('head1'), id, { axes: at80 });
-      await expect(h.service.replaceAxes(actor('boss'), DEFAULT_AXES)).rejects.toBeInstanceOf(ConflictException);
+      await expect(h.service.replaceAxes(actor('boss'), FIXTURE_AXES)).rejects.toBeInstanceOf(ConflictException);
       await h.service.returnEvaluation(actor('deputy'), id, 'Chấm lại sau khi đổi trục', NONE);
-      await expect(h.service.replaceAxes(actor('boss'), DEFAULT_AXES)).resolves.toHaveLength(9);
+      await expect(h.service.replaceAxes(actor('boss'), FIXTURE_AXES)).resolves.toHaveLength(9);
     });
 
     it('hồ sơ đã phê duyệt giữ ảnh chụp trục dù cấu hình đổi sau đó', async () => {
@@ -427,11 +434,84 @@ describe('UnitEvaluationService: chấm theo trục cấu hình (ADR-036)', () =
       await h.service.selfSubmit(actor('head1'), id, { axes: at80 });
       await h.service.review(actor('deputy'), id, { axes: at80 }, NONE);
       await h.service.approve(actor('boss'), id, 'Đồng ý', NONE);
-      await h.service.replaceAxes(actor('boss'), DEFAULT_AXES.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 4 } : a.code === 'T1' ? { ...a, maxPoints: 16 } : a)));
+      await h.service.replaceAxes(actor('boss'), FIXTURE_AXES.map((a) => (a.code === 'T6' ? { ...a, maxPoints: 4 } : a.code === 'T1' ? { ...a, maxPoints: 16 } : a)));
       const row = (await h.evals.findById(id))!;
       expect(row.axisScores?.find((a) => a.code === 'T6')).toMatchObject({ max: 5, score: 4 });
       expect(row.resultScore).toBe(56);
     });
+  });
+});
+
+describe('UnitEvaluationService: bộ trục riêng của từng đơn vị (ADR-052)', () => {
+  let h: H;
+  // Bộ riêng của Phòng 1: hai trục chung 15 + 15 và hai trục kết quả 40 + 30, mã khác hẳn bộ mặc định.
+  const OWN: AxisDefinition[] = [
+    { code: 'X1', name: 'Chung một', kind: 'GENERAL', maxPoints: 15, sortOrder: 1, autoMetric: null, active: true },
+    { code: 'X2', name: 'Chung hai', kind: 'GENERAL', maxPoints: 15, sortOrder: 2, autoMetric: null, active: true },
+    { code: 'Y1', name: 'Kết quả chính', kind: 'RESULT', maxPoints: 40, sortOrder: 3, autoMetric: 'COMPLETED_SHARE', active: true },
+    { code: 'Y2', name: 'Kết quả phụ', kind: 'RESULT', maxPoints: 30, sortOrder: 4, autoMetric: null, active: true },
+  ];
+  const full = (defs: readonly AxisDefinition[], ratio = 1) => defs.map((a) => ({ code: a.code, score: a.maxPoints * ratio }));
+
+  beforeEach(async () => {
+    h = await build();
+    h.axes.list = FIXTURE_AXES.map((a) => ({ ...a }));
+    await h.service.generate(actor('boss'), h.year.id);
+  });
+
+  it('đơn vị có bộ riêng chấm theo bộ riêng; đơn vị khác vẫn theo bộ mặc định', async () => {
+    await h.service.replaceAxes(actor('boss'), OWN, 'u-p1');
+    const p1 = await idOf(h, 'u-p1');
+    const p2 = await idOf(h, 'u-p2');
+    await expect(h.service.selfSubmit(actor('head1'), p1, { axes: full(FIXTURE_AXES) })).rejects.toThrow(/không có hoặc đã tắt/);
+    await h.service.selfSubmit(actor('head1'), p1, { axes: full(OWN, 0.5) });
+    expect(await h.evals.findById(p1)).toMatchObject({ selfGeneralScore: 15, selfResultScore: 35 });
+    await h.service.selfSubmit(actor('head2'), p2, { axes: full(FIXTURE_AXES, 0.5) });
+    expect((await h.evals.findById(p2))!.selfAxisScores).toHaveLength(9);
+
+    expect((await h.service.get(actor('deputy'), p1, NONE)).axes.map((a) => a.code)).toEqual(['X1', 'X2', 'Y1', 'Y2']);
+    expect((await h.service.get(actor('deputy'), p2, NONE)).axes).toHaveLength(9);
+    expect((await h.service.axes('u-p1')).map((a) => a.code)).toEqual(['X1', 'X2', 'Y1', 'Y2']);
+    expect(await h.service.axes('u-p2')).toHaveLength(9);
+  });
+
+  it('danh sách bộ trục: bộ mặc định trước, đơn vị cha trước đơn vị con, đánh dấu đơn vị có bộ riêng', async () => {
+    await h.service.replaceAxes(actor('boss'), OWN, 'u-p1');
+    const sets = await h.service.axisSets();
+    expect(sets.map((s) => [s.unitCode, s.own, s.axes.length])).toEqual([
+      [null, true, 9],
+      ['BAN', false, 9],
+      ['P1', true, 4],
+      ['P2', false, 9],
+      ['P3', false, 9],
+    ]);
+  });
+
+  it('hồ sơ đang chờ chỉ chặn sửa bộ trục mà hồ sơ đó dùng', async () => {
+    await h.service.replaceAxes(actor('boss'), OWN, 'u-p1');
+    await h.service.selfSubmit(actor('head2'), await idOf(h, 'u-p2'), { axes: full(FIXTURE_AXES) }); // P2 dùng bộ mặc định
+    await expect(h.service.replaceAxes(actor('boss'), FIXTURE_AXES)).rejects.toBeInstanceOf(ConflictException);
+    await expect(h.service.replaceAxes(actor('boss'), OWN.map((a) => ({ ...a, name: `${a.name} sửa` })), 'u-p1')).resolves.toHaveLength(4);
+
+    await h.service.selfSubmit(actor('head1'), await idOf(h, 'u-p1'), { axes: full(OWN) });
+    await expect(h.service.replaceAxes(actor('boss'), OWN, 'u-p1')).rejects.toBeInstanceOf(ConflictException);
+    await expect(h.service.resetAxes(actor('boss'), 'u-p1')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('bỏ bộ riêng thì quay về bộ mặc định; có nhật ký; đơn vị lạ, bộ rỗng, bỏ khi chưa có đều bị từ chối', async () => {
+    await h.service.replaceAxes(actor('boss'), OWN, 'u-p1');
+    expect((await h.service.resetAxes(actor('boss'), 'u-p1')).map((a) => a.code)).toEqual(FIXTURE_AXES.map((a) => a.code));
+    expect(await h.service.axes('u-p1')).toHaveLength(9);
+    expect(h.audit.filter((a) => a.action.startsWith('unit-evaluation.axes')).map((a) => [a.action, a.details?.set])).toEqual([
+      ['unit-evaluation.axes.update', 'P1'],
+      ['unit-evaluation.axes.reset', 'P1'],
+    ]);
+
+    await expect(h.service.resetAxes(actor('boss'), 'u-p1')).rejects.toBeInstanceOf(ConflictException);
+    await expect(h.service.replaceAxes(actor('boss'), OWN, 'u-khong-co')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(h.service.axes('u-khong-co')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(h.service.replaceAxes(actor('boss'), [], 'u-p2')).rejects.toThrow(/ít nhất một trục/);
+    await expect(h.service.replaceAxes(actor('boss'), OWN.map((a) => (a.code === 'Y2' ? { ...a, maxPoints: 20 } : a)), 'u-p2')).rejects.toThrow(/phải bằng 70/);
   });
 });
 

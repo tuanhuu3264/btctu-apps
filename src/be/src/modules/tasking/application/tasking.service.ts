@@ -8,9 +8,11 @@ import { buildExportFile, MAX_EXPORT_ROWS } from '../../../common/table-export.j
 import type { ExportedTable, TableFormat } from '../../../common/table-export.js';
 import { buildTaskExport, taskStatistics } from './task-report.js';
 import type { TaskStatistics } from './task-report.js';
+import { earlyWarnings } from './early-warning.js';
+import type { EarlyWarning } from './early-warning.js';
 import type { ParsedOkr } from '../../organization/index.js';
 import { AuditService } from '../../security/index.js';
-import { ASSIGNMENT_STATES, belongsToPeriod, isIsoDate, MAX_CONSULTANTS, MAX_CONTENT_LENGTH, MAX_QUANTITY, REPORT_KINDS, stateOf, summarize, todayVietnam } from './tasking.model.js';
+import { ASSIGNMENT_STATES, belongsToPeriod, isIsoDate, MAX_CONSULTANTS, MAX_CONTENT_LENGTH, MAX_QUANTITY, penaltyOf, REPORT_KINDS, stateOf, summarize, todayVietnam } from './tasking.model.js';
 import type {
   AssignedWork,
   AssignmentModel,
@@ -22,10 +24,11 @@ import type {
   ProgressModel,
   ProgressSummary,
   ReportKind,
+  WaiverModel,
   WorkTaskModel,
 } from './tasking.model.js';
 import type { RecurringTemplateModel } from './recurring.model.js';
-import { AssignmentRepository, CatalogDirectory, ConsultantRepository, OrgDirectory, ProgressRepository, WorkTaskRepository } from './tasking.ports.js';
+import { AssignmentRepository, CatalogDirectory, ConsultantRepository, OrgDirectory, ProgressRepository, WaiverRepository, WorkTaskRepository } from './tasking.ports.js';
 import type { CatalogItemInfo } from './tasking.ports.js';
 
 /** Người thao tác: tài khoản đang đăng nhập và cán bộ gắn với tài khoản đó (có thể chưa gắn). */
@@ -41,6 +44,8 @@ export interface AssignmentView {
   itemName: string;
   coefficient: number | null;
   progress: ProgressModel[];
+  /** Miễn trừ do nguyên nhân khách quan của các lần báo cáo, kể cả đã thu hồi (ADR-056). */
+  waivers: WaiverModel[];
   summary: ProgressSummary;
   /** Người xác nhận kết quả: người duyệt (cc) nếu có, không thì cấp trên trực tiếp hiện tại (null nếu vị trí đang trống). */
   confirmerPersonId: string | null;
@@ -137,6 +142,11 @@ const assertContent = (note: string | null | undefined): void => {
   if (note && note.length > MAX_CONTENT_LENGTH) throw new BadRequestException(`Nội dung tối đa ${MAX_CONTENT_LENGTH} ký tự`);
 };
 
+const assertWaiverReason = (text: string): void => {
+  if (text.length < 10) throw new BadRequestException('Cần nêu nguyên nhân khách quan và căn cứ xác nhận (ít nhất 10 ký tự)');
+  if (text.length > 2000) throw new BadRequestException('Nguyên nhân khách quan tối đa 2000 ký tự');
+};
+
 const assertQuantity = (value: number, label: string): void => {
   if (!Number.isInteger(value) || value < 1 || value > MAX_QUANTITY) {
     throw new BadRequestException(`${label} phải là số nguyên từ 1 đến ${MAX_QUANTITY}`);
@@ -152,6 +162,7 @@ export class TaskingService {
   constructor(
     private readonly assignments: AssignmentRepository,
     private readonly progress: ProgressRepository,
+    private readonly waivers: WaiverRepository,
     private readonly workTasks: WorkTaskRepository,
     private readonly consultants: ConsultantRepository,
     private readonly org: OrgDirectory,
@@ -267,7 +278,7 @@ export class TaskingService {
     await this.notifier.notify([assigneePersonId], { type: 'TASK_ASSIGNED', title: `Bạn được giao việc${created.source === 'AD_HOC' ? ' đột xuất' : ''}: ${task.title}`, link });
     await this.notifier.notify(others([people.approverId]), { type: 'TASK_ROLE', title: `Bạn được chỉ định duyệt kết quả việc: ${task.title}`, link });
     await this.notifier.notify(others(people.consultantIds), { type: 'TASK_ROLE', title: `Bạn được mời tham vấn việc: ${task.title}`, link });
-    return this.view(created, [], people.approverId ?? confirmer, new Map(current.items), task, people.consultantIds, todayVietnam(this.clock.now()));
+    return this.view(created, [], [], people.approverId ?? confirmer, new Map(current.items), task, people.consultantIds, todayVietnam(this.clock.now()));
   }
 
   /**
@@ -586,7 +597,11 @@ export class TaskingService {
    * Cấp trên trực tiếp xác nhận hoặc từ chối một lần báo cáo. Từ chối cần nêu lý do và nói rõ có phải sai sót lớn về nội dung
    * hay không: chỉ sai sót lớn mới là một lần chưa đạt, bị trừ 25% điểm chất lượng (Nghị định 335/2025 Điều 14.2.b).
    */
-  async decide(actor: Actor, progressId: string, input: { decision: 'CONFIRM' | 'REJECT'; note?: string | null; majorError?: boolean }): Promise<ProgressModel> {
+  async decide(
+    actor: Actor,
+    progressId: string,
+    input: { decision: 'CONFIRM' | 'REJECT'; note?: string | null; majorError?: boolean; objectiveReason?: string | null },
+  ): Promise<ProgressModel> {
     const progress = await this.progress.findById(progressId);
     if (!progress) throw new NotFoundException(`Không tìm thấy lần báo cáo: ${progressId}`);
     const assignment = await this.require(progress.assignmentId);
@@ -596,6 +611,13 @@ export class TaskingService {
     const note = input.note?.trim() || null;
     if (input.decision === 'REJECT' && (note?.length ?? 0) < 3) throw new BadRequestException('Cần nêu lý do khi từ chối');
     if (input.decision === 'REJECT' && typeof input.majorError !== 'boolean') throw new BadRequestException('Cần nói rõ có phải sai sót lớn về nội dung hay không');
+    // Xác nhận miễn trừ ngay khi duyệt (ADR-056): chỉ hợp lý khi lần này thật sự bị tính chậm hoặc chưa đạt.
+    const objective = input.objectiveReason?.trim() || null;
+    if (objective !== null) {
+      const would = penaltyOf(assignment, { status: input.decision === 'CONFIRM' ? 'CONFIRMED' : 'REJECTED', completedOn: progress.completedOn, majorError: input.majorError ?? false });
+      if (would === null) throw new BadRequestException('Lần báo cáo này không bị tính chậm hoặc chưa đạt nên không cần nêu nguyên nhân khách quan');
+      assertWaiverReason(objective);
+    }
 
     const updated = await this.progress.update(progressId, {
       status: input.decision === 'CONFIRM' ? 'CONFIRMED' : 'REJECTED',
@@ -611,6 +633,7 @@ export class TaskingService {
       targetId: progressId,
       details: { assignmentId: assignment.id, code: assignment.catalogItemCode, quantity: progress.quantity, late: progress.completedOn > assignment.dueDate, note, ...(input.decision === 'REJECT' ? { majorError: input.majorError } : {}) },
     });
+    if (objective !== null) await this.recordWaiver(actor, assignment, updated, objective);
     const title = (await this.requireTask(assignment.taskId)).title;
     await this.notifier.notify([assignment.assigneePersonId], {
       type: input.decision === 'CONFIRM' ? 'TASK_CONFIRMED' : 'TASK_REJECTED',
@@ -618,6 +641,67 @@ export class TaskingService {
       link: `/tasks?open=${assignment.id}`,
     });
     return updated;
+  }
+
+  /**
+   * Miễn trừ do nguyên nhân khách quan cho một lần chậm hoặc một lần chưa đạt (Nghị định 335/2025 Điều 14.2.b, c): người xác nhận
+   * kết quả của việc quyết định, nêu nguyên nhân và căn cứ. Lần đó không còn bị trừ 25% ở hồ sơ kỳ được làm mới sau đó; hồ sơ
+   * đã tự chấm thì số liệu đã chốt, không đổi (ADR-056).
+   */
+  async waive(actor: Actor, progressId: string, reason: string): Promise<WaiverModel> {
+    const { progress, assignment } = await this.requireProgressOf(progressId);
+    this.assertActor(actor, await this.approverOf(assignment), 'miễn trừ kết quả của');
+    if (penaltyOf(assignment, progress) === null) throw new BadRequestException('Lần báo cáo này không bị tính chậm hoặc chưa đạt nên không cần miễn trừ');
+    const text = reason.trim();
+    assertWaiverReason(text);
+    if ((await this.waivers.findByProgress([progressId])).some((w) => w.revokedAt === null)) throw new ConflictException('Lần báo cáo này đã được miễn trừ');
+    return this.recordWaiver(actor, assignment, progress, text);
+  }
+
+  /** Thu hồi miễn trừ đã cấp (bản ghi giữ lại, đánh dấu đã thu hồi). */
+  async revokeWaiver(actor: Actor, progressId: string, note: string): Promise<WaiverModel> {
+    const { assignment } = await this.requireProgressOf(progressId);
+    this.assertActor(actor, await this.approverOf(assignment), 'thu hồi miễn trừ kết quả của');
+    const active = (await this.waivers.findByProgress([progressId])).find((w) => w.revokedAt === null);
+    if (!active) throw new ConflictException('Lần báo cáo này không có miễn trừ đang hiệu lực');
+    const text = note.trim();
+    if (text.length < 3) throw new BadRequestException('Cần nêu lý do thu hồi miễn trừ');
+    const revoked = await this.waivers.revoke(active.id, actor.id, this.clock.now(), text);
+    await this.audit.record({
+      action: 'tasking.waiver.revoke',
+      outcome: 'SUCCESS',
+      targetType: 'work_progress',
+      targetId: progressId,
+      details: { assignmentId: assignment.id, code: assignment.catalogItemCode, kind: active.kind, note: text },
+    });
+    const title = (await this.requireTask(assignment.taskId)).title;
+    await this.notifier.notify([assignment.assigneePersonId], { type: 'TASK_WAIVER', title: `Miễn trừ đã bị thu hồi: ${title}`, link: `/tasks?open=${assignment.id}` });
+    return revoked;
+  }
+
+  private async requireProgressOf(progressId: string): Promise<{ progress: ProgressModel; assignment: AssignmentModel }> {
+    const progress = await this.progress.findById(progressId);
+    if (!progress) throw new NotFoundException(`Không tìm thấy lần báo cáo: ${progressId}`);
+    return { progress, assignment: await this.require(progress.assignmentId) };
+  }
+
+  private async recordWaiver(actor: Actor, assignment: AssignmentModel, progress: ProgressModel, reason: string): Promise<WaiverModel> {
+    const kind = penaltyOf(assignment, progress)!;
+    const created = await this.waivers.create({ progressId: progress.id, kind, reason, grantedBy: actor.id, grantedAt: this.clock.now() });
+    await this.audit.record({
+      action: 'tasking.waiver.grant',
+      outcome: 'SUCCESS',
+      targetType: 'work_progress',
+      targetId: progress.id,
+      details: { assignmentId: assignment.id, code: assignment.catalogItemCode, kind, reason },
+    });
+    const title = (await this.requireTask(assignment.taskId)).title;
+    await this.notifier.notify([assignment.assigneePersonId], {
+      type: 'TASK_WAIVER',
+      title: `Lần ${kind === 'LATE' ? 'chậm' : 'chưa đạt'} được miễn trừ (nguyên nhân khách quan): ${title}`,
+      link: `/tasks?open=${assignment.id}`,
+    });
+    return created;
   }
 
   /** Hủy việc giao sai. Không hủy được nếu đã có kết quả được xác nhận. */
@@ -649,6 +733,7 @@ export class TaskingService {
     const rows = (await this.assignments.findOpenDueBetween(period.startDate, period.endDate)).filter((a) => belongsToPeriod(a, period));
     if (rows.length === 0) return [];
     const progress = await this.progress.findByAssignments(rows.map((r) => r.id));
+    const waived = await this.waivedIds(progress);
     const titles = new Map((await this.workTasks.findByIds([...new Set(rows.map((r) => r.taskId))])).map((t) => [t.id, t.title]));
     return rows.map((a) => {
       const own = progress.filter((p) => p.assignmentId === a.id);
@@ -661,7 +746,7 @@ export class TaskingService {
         catalogItemCode: a.catalogItemCode,
         plannedQuantity: a.plannedQuantity,
         evidence: evidence ? evidence.slice(0, 2000) : null,
-        ...summarize(a, own),
+        ...summarize(a, own, waived),
       };
     });
   }
@@ -936,6 +1021,52 @@ export class TaskingService {
     return { views: matched.slice(0, limit), truncated: matched.length > limit };
   }
 
+  // ------------------------------------------------------------- dùng cho đề án, dự án (ProjectService, ADR-050)
+
+  /** Gắn việc vào đề án (hoặc gỡ nếu `projectId` null). Chỉ người giao có quyền với người nhận; mã đề án do mô-đun project kiểm tra. */
+  async linkProject(actor: Actor, assignmentId: string, projectId: string | null): Promise<{ title: string; assigneePersonId: string }> {
+    const a = await this.require(assignmentId);
+    this.assertActor(actor, await this.confirmerOf(a.assigneePersonId, a.positionId), 'gắn việc của');
+    if (a.status !== 'OPEN') throw new ConflictException('Chỉ gắn được việc đang thực hiện vào đề án');
+    if (projectId !== null && a.projectId !== null && a.projectId !== projectId) throw new ConflictException('Việc này đã thuộc một đề án khác: hãy gỡ khỏi đề án đó trước');
+    await this.assignments.update(assignmentId, { projectId });
+    return { title: await this.titleOf(a), assigneePersonId: a.assigneePersonId };
+  }
+
+  /** Việc của một đề án, dạng tóm tắt (không có nội dung chi tiết). */
+  async workOfProject(projectId: string): Promise<{ assignmentId: string; title: string; taskTitle: string; assigneePersonId: string; dueDate: string; state: string; plannedQuantity: number; confirmedQuantity: number; lateCount: number; reworkCount: number }[]> {
+    return (await this.views((await this.assignments.findByProject(projectId)).filter((a) => a.status !== 'CANCELLED'))).map(toLinkedWork);
+  }
+
+  async workCountByProject(projectIds: readonly string[]): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (projectIds.length === 0) return counts;
+    const wanted = new Set(projectIds);
+    for (const a of await this.assignments.findAll()) {
+      if (a.projectId && wanted.has(a.projectId) && a.status !== 'CANCELLED') counts.set(a.projectId, (counts.get(a.projectId) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  /** Việc người này đã giao, còn hiệu lực, chưa gắn đề án nào. */
+  async projectLinkCandidates(actor: Actor): Promise<ReturnType<typeof toLinkedWork>[]> {
+    const rows = (await this.assignments.findByAssigner(actor.id)).filter((a) => a.status === 'OPEN' && a.projectId === null);
+    return (await this.views(rows)).filter((v) => v.state !== 'DONE').map(toLinkedWork);
+  }
+
+  /** Cảnh báo sớm: việc có nguy cơ chậm (sắp đến hạn mà chưa làm nhiều, hoặc chậm so với tiến độ thời gian) trong phạm vi của người xem. */
+  async earlyWarning(actor: Actor, scope: SearchScope, canReadAll: boolean): Promise<EarlyWarning> {
+    const { filtered } = await this.select(actor, { scope, states: ['IN_PROGRESS', 'OVERDUE'] }, canReadAll);
+    const result = earlyWarnings(filtered.filter((v) => v.state === 'IN_PROGRESS' || v.state === 'OVERDUE'), todayVietnam(this.clock.now()), (v) => todayVietnam(v.assignment.createdAt));
+    const { persons } = await this.org.lookup();
+    const nameOf = (id: string) => persons.get(id)?.fullName;
+    return {
+      ...result,
+      items: result.items.map((i) => ({ ...i, assigneeName: nameOf(i.assigneePersonId) })),
+      byAssignee: result.byAssignee.map((r) => ({ ...r, name: nameOf(r.personId) })),
+    };
+  }
+
   /** Thống kê (trạng thái, tỷ lệ chậm, chưa đạt, theo đơn vị) trên các việc theo bộ lọc (PLAN-A A6.4). */
   async statistics(actor: Actor, query: SearchQuery, canReadAll: boolean): Promise<TaskStatistics> {
     const { filtered } = await this.select(actor, { ...query, scope: query.scope ?? 'mine' }, canReadAll);
@@ -1000,9 +1131,15 @@ export class TaskingService {
     return assignment;
   }
 
+  /** Các lần báo cáo đang được miễn trừ (chưa thu hồi). */
+  private async waivedIds(progress: readonly ProgressModel[]): Promise<Set<string>> {
+    return new Set((await this.waivers.findByProgress(progress.map((p) => p.id))).filter((w) => w.revokedAt === null).map((w) => w.progressId));
+  }
+
   private async views(rows: AssignmentModel[]): Promise<AssignmentView[]> {
     if (rows.length === 0) return [];
     const progress = await this.progress.findByAssignments(rows.map((r) => r.id));
+    const waiverRows = await this.waivers.findByProgress(progress.map((p) => p.id));
     const taskById = new Map((await this.workTasks.findByIds([...new Set(rows.map((r) => r.taskId))])).map((t) => [t.id, t]));
     const consultantRows = await this.consultants.findByAssignments(rows.map((r) => r.id));
     const today = todayVietnam(this.clock.now());
@@ -1017,6 +1154,7 @@ export class TaskingService {
         this.view(
           a,
           progress.filter((p) => p.assignmentId === a.id),
+          waiverRows,
           a.approverPersonId ?? confirmers.get(confirmerKey) ?? null,
           versions.get(a.catalogVersionId) ?? new Map(),
           taskById.get(a.taskId),
@@ -1031,6 +1169,7 @@ export class TaskingService {
   private view(
     assignment: AssignmentModel,
     progress: ProgressModel[],
+    waiverRows: WaiverModel[],
     confirmerPersonId: string | null,
     items: Map<string, { name: string; coefficient: number | null }>,
     task: WorkTaskModel | undefined,
@@ -1038,7 +1177,8 @@ export class TaskingService {
     today: string,
   ): AssignmentView {
     const item = items.get(assignment.catalogItemCode);
-    const summary = summarize(assignment, progress);
+    const ownWaivers = waiverRows.filter((w) => progress.some((p) => p.id === w.progressId));
+    const summary = summarize(assignment, progress, new Set(ownWaivers.filter((w) => w.revokedAt === null).map((w) => w.progressId)));
     const adHoc = assignment.source === 'AD_HOC';
     return {
       assignment,
@@ -1047,6 +1187,7 @@ export class TaskingService {
       coefficient: adHoc ? adHocCoefficient(assignment.catalogItemCode) : (item?.coefficient ?? null),
       adHocLevel: adHoc ? adHocLevelOf(assignment.catalogItemCode) : null,
       progress: [...progress].sort((a, b) => a.completedOn.localeCompare(b.completedOn)),
+      waivers: ownWaivers,
       summary,
       confirmerPersonId,
       approverPersonId: assignment.approverPersonId,
@@ -1059,4 +1200,20 @@ export class TaskingService {
 /** Loại việc để lọc: việc do mẫu lặp sinh ra là RECURRING dù giao từ danh mục hay đột xuất. */
 export function workKindOf(a: Pick<AssignmentModel, 'source' | 'recurringTemplateId'>): WorkKind {
   return a.recurringTemplateId ? 'RECURRING' : a.source === 'AD_HOC' ? 'AD_HOC' : 'CATALOG';
+}
+
+function toLinkedWork(v: AssignmentView) {
+  const a = v.assignment;
+  return {
+    assignmentId: a.id,
+    title: a.source === 'AD_HOC' ? (a.title ?? v.itemName) : `${a.catalogItemCode} ${v.itemName}`,
+    taskTitle: v.task.title,
+    assigneePersonId: a.assigneePersonId,
+    dueDate: a.dueDate,
+    state: v.state,
+    plannedQuantity: a.plannedQuantity,
+    confirmedQuantity: v.summary.confirmedQuantity,
+    lateCount: v.summary.lateCount,
+    reworkCount: v.summary.reworkCount,
+  };
 }

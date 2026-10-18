@@ -1,9 +1,11 @@
-import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import type { Rating } from '../../scoring/index.js';
 import type { EvaluationStatus, PeriodStatus, PeriodType } from '../application/evaluation.model.js';
 import type { AutoMetric, AxisKind, AxisScore } from '../application/unit-axes.js';
 import type { ComplaintKind, ComplaintOutcome, ComplaintStatus } from '../application/unit-complaint.js';
 import type { LeaveReason } from '../application/leave.js';
+import type { GeneralCriteriaSet, GeneralMarks } from '../application/general-criteria.js';
+import type { DisciplineForm, DisciplineReason, DisciplineSystem, RatingEventKind } from '../application/rating-events.js';
 import type { UnitMetrics } from '../application/unit-evaluation.model.js';
 
 /** PostgreSQL trả numeric dạng chuỗi; chuyển về số (hoặc null) khi đọc. */
@@ -119,6 +121,18 @@ export class EvaluationEntity {
   @Column({ type: 'jsonb', nullable: true })
   leadership: { unitResult: number; organizing: number; solidarity: number } | null;
 
+  @Column({ name: 'self_support', type: 'jsonb', nullable: true })
+  selfSupport: { quality: number; compliance: number; efficiency: number } | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  support: { quality: number; compliance: number; efficiency: number } | null;
+
+  @Column({ name: 'self_general', type: 'jsonb', nullable: true })
+  selfGeneral: GeneralMarks | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  general: GeneralMarks | null;
+
   @Column({ name: 'created_by', type: 'uuid', nullable: true })
   createdBy: string | null;
 
@@ -127,6 +141,68 @@ export class EvaluationEntity {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
+}
+
+/** Phiên bản bảng tiêu chí chung của cá nhân, áp dụng từ một tháng (ADR-054). */
+@Entity('general_criteria_version')
+export class GeneralCriteriaVersionEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'effective_from', type: 'date', unique: true })
+  effectiveFrom: string;
+
+  @Column({ type: 'jsonb' })
+  leader: GeneralCriteriaSet;
+
+  @Column({ type: 'jsonb' })
+  staff: GeneralCriteriaSet;
+
+  @Column({ type: 'text', nullable: true })
+  note: string | null;
+
+  @Column({ name: 'created_by', type: 'uuid', nullable: true })
+  createdBy: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+}
+
+/** Sự kiện ảnh hưởng xếp loại cá nhân: kỷ luật, kết luận suy thoái, tín nhiệm thấp, tham nhũng trong phạm vi quản lý (ADR-055). */
+@Entity('rating_event')
+export class RatingEventEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'person_id', type: 'uuid' })
+  personId: string;
+
+  @Column({ type: 'varchar', length: 24 })
+  kind: RatingEventKind;
+
+  @Column({ name: 'effective_date', type: 'date' })
+  effectiveDate: string;
+
+  @Column({ name: 'decision_no', type: 'varchar', length: 100 })
+  decisionNo: string;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  form: DisciplineForm | null;
+
+  @Column({ type: 'varchar', length: 12, nullable: true })
+  system: DisciplineSystem | null;
+
+  @Column({ type: 'varchar', length: 12, nullable: true })
+  reason: DisciplineReason | null;
+
+  @Column({ type: 'text', nullable: true })
+  note: string | null;
+
+  @Column({ name: 'created_by', type: 'uuid', nullable: true })
+  createdBy: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
 }
 
 @Entity('evaluation_task')
@@ -163,6 +239,12 @@ export class EvaluationTaskEntity {
 
   @Column({ name: 'rework_count', type: 'int', default: 0 })
   reworkCount: number;
+
+  @Column({ name: 'waived_late_count', type: 'int', default: 0 })
+  waivedLateCount: number;
+
+  @Column({ name: 'waived_rework_count', type: 'int', default: 0 })
+  waivedReworkCount: number;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
@@ -249,10 +331,16 @@ export class UnitEvaluationEntity {
   updatedAt: Date;
 }
 
-/** Định nghĩa trục chấm điểm tập thể (ADR-036). */
+/** Định nghĩa trục chấm điểm tập thể (ADR-036), thuộc bộ mặc định (`unitId` null) hoặc bộ riêng của một đơn vị (ADR-052). */
 @Entity('unit_axis')
 export class UnitAxisEntity {
-  @PrimaryColumn({ type: 'varchar', length: 10 })
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'unit_id', type: 'uuid', nullable: true })
+  unitId: string | null;
+
+  @Column({ type: 'varchar', length: 10 })
   code: string;
 
   @Column({ type: 'varchar', length: 200 })

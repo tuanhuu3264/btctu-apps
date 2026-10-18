@@ -21,7 +21,11 @@ import {
   PeriodRepository,
   PeriodWorkSource,
   TaskRepository,
+  UnitCompletionSource,
 } from '../evaluation.ports.js';
+import { RatingEventRepository } from '../rating-events.js';
+import type { NewRatingEvent, RatingEventModel } from '../rating-events.js';
+import { RatingEventService } from '../rating-event.service.js';
 import type { CatalogVersionInfo, HeadedUnitRating, Placement, PeriodWork, PositionInfo, Superior } from '../evaluation.ports.js';
 import { LeaveRepository } from '../leave.js';
 import type { LeaveMonth } from '../leave.js';
@@ -29,6 +33,9 @@ import { UnitComplaintRepository } from '../unit-complaint.js';
 import type { NewUnitComplaint, UnitComplaintModel, UnitComplaintPatch } from '../unit-complaint.js';
 import { EvaluationService } from '../evaluation.service.js';
 import type { Actor } from '../evaluation.service.js';
+import { DEFAULT_CRITERIA_NOTE, GeneralCriteriaRepository, LEADER_SET, STAFF_SET } from '../general-criteria.js';
+import type { GeneralCriteriaVersion, NewGeneralCriteriaVersion } from '../general-criteria.js';
+import { GeneralCriteriaService } from '../general-criteria.service.js';
 
 /** Đối tượng giả dùng chung cho test lớp nghiệp vụ của mô-đun evaluation. */
 
@@ -105,6 +112,10 @@ export class InMemoryEvaluations extends EvaluationRepository {
       rating: null,
       scoringParams: null,
       leadership: null,
+      selfSupport: null,
+      support: null,
+      selfGeneral: null,
+      general: null,
     };
     this.rows.push(row);
     return row;
@@ -138,6 +149,8 @@ export class InMemoryTasks extends TaskRepository {
       sourceTaskTitles: data.sourceTaskTitles ?? [],
       lateCount: data.lateCount ?? 0,
       reworkCount: data.reworkCount ?? 0,
+      waivedLateCount: data.waivedLateCount ?? 0,
+      waivedReworkCount: data.waivedReworkCount ?? 0,
     };
     this.rows.push(row);
     return { ...row };
@@ -245,6 +258,9 @@ export async function buildEvaluation() {
   const unitRatings = new FakeUnitRatings();
   const leave = new InMemoryLeave();
   const complaints = new InMemoryUnitComplaints();
+  const criteria = new InMemoryGeneralCriteria();
+  const ratingEvents = new InMemoryRatingEvents();
+  const completion = new FakeCompletion();
 
   const level: Record<string, number> = { boss: 1, deputy: 2, head: 3, staff: 5, other: 5 };
   for (const [key, id] of Object.entries(PEOPLE)) org.positions.set(id, { positionId: `pos-${key}`, level: level[key] });
@@ -259,6 +275,11 @@ export async function buildEvaluation() {
   const moduleRef = await Test.createTestingModule({
     providers: [
       EvaluationService,
+      GeneralCriteriaService,
+      RatingEventService,
+      { provide: GeneralCriteriaRepository, useValue: criteria },
+      { provide: RatingEventRepository, useValue: ratingEvents },
+      { provide: UnitCompletionSource, useValue: completion },
       { provide: Clock, useValue: clock },
       { provide: PeriodRepository, useValue: repos.periods },
       { provide: EvaluationRepository, useValue: repos.evaluations },
@@ -274,8 +295,10 @@ export async function buildEvaluation() {
     ],
   }).compile();
   const service = moduleRef.get(EvaluationService);
+  const criteriaService = moduleRef.get(GeneralCriteriaService);
+  const ratingEventService = moduleRef.get(RatingEventService);
 
-  return { service, clock, audit, repos, org, catalog, work, sup, notifier, unitRatings, leave, complaints };
+  return { service, criteriaService, clock, audit, repos, org, catalog, work, sup, notifier, unitRatings, leave, complaints, criteria, ratingEvents, ratingEventService, completion };
 }
 
 export type Harness = Awaited<ReturnType<typeof buildEvaluation>>;
@@ -351,6 +374,62 @@ export class InMemoryUnitComplaints extends UnitComplaintRepository {
     const row = this.rows.find((c) => c.id === id)!;
     Object.assign(row, patch);
     return { ...row };
+  }
+}
+
+/** Bảng tiêu chí chung theo phiên bản; mặc định rỗng: các kỳ chấm một ô 0–30 như trước khi có bảng. */
+export class InMemoryGeneralCriteria extends GeneralCriteriaRepository {
+  rows: GeneralCriteriaVersion[] = [];
+  async findAll() {
+    return [...this.rows].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+  }
+  async findById(id: string) {
+    return this.rows.find((v) => v.id === id) ?? null;
+  }
+  async create(data: NewGeneralCriteriaVersion) {
+    const row: GeneralCriteriaVersion = { ...data, id: nextId('gc'), createdAt: new Date() };
+    this.rows.push(row);
+    return row;
+  }
+  async delete(id: string) {
+    this.rows = this.rows.filter((v) => v.id !== id);
+  }
+}
+
+/** Phiên bản theo đúng văn bản (05-HD/TU Phụ lục 03, Nghị định 335 Mẫu số 01), áp dụng từ `effectiveFrom`. */
+export function documentCriteria(effectiveFrom = '2026-01-01'): NewGeneralCriteriaVersion {
+  return { effectiveFrom, leader: LEADER_SET, staff: STAFF_SET, note: DEFAULT_CRITERIA_NOTE, createdBy: null };
+}
+
+/** Chấm mọi mục Đảm bảo, trừ các mục nêu ở `failed` (Không đảm bảo kèm căn cứ). */
+export function marksFor(group: 'LEADER' | 'STAFF', failed: string[] = []) {
+  const set = group === 'LEADER' ? LEADER_SET : STAFF_SET;
+  return set.items.map((i) => (failed.includes(i.code) ? { code: i.code, ok: false, note: `Hạn chế ở mục ${i.code}` } : { code: i.code, ok: true }));
+}
+
+export class InMemoryRatingEvents extends RatingEventRepository {
+  rows: RatingEventModel[] = [];
+  async findByPerson(personId: string, from: string, to: string) {
+    return this.rows.filter((e) => e.personId === personId && e.effectiveDate >= from && e.effectiveDate <= to).sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  }
+  async findById(id: string) {
+    return this.rows.find((e) => e.id === id) ?? null;
+  }
+  async create(data: NewRatingEvent) {
+    const row: RatingEventModel = { ...data, id: nextId('re'), createdAt: new Date() };
+    this.rows.push(row);
+    return row;
+  }
+  async delete(id: string) {
+    this.rows = this.rows.filter((e) => e.id !== id);
+  }
+}
+
+/** Số việc của đơn vị phụ trách, đặt tay theo vị trí. */
+export class FakeCompletion extends UnitCompletionSource {
+  byPosition = new Map<string, { unitName: string; works: number; completed: number }>();
+  async of(positionId: string) {
+    return this.byPosition.get(positionId) ?? null;
   }
 }
 

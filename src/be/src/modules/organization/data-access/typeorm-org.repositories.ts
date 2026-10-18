@@ -82,7 +82,7 @@ export class TypeOrmPositionRepository extends PositionRepository {
   }
 
   async create(data: NewPosition): Promise<PositionModel> {
-    return toPosition(await this.repo.save(this.repo.create({ ...data, isLeader: data.isLeader ?? defaultIsLeader(data.level), status: 'ACTIVE', inactiveAt: null, inactiveReason: null })));
+    return toPosition(await this.repo.save(this.repo.create({ ...data, isLeader: data.isLeader ?? defaultIsLeader(data.level), isSupport: data.isSupport ?? false, status: 'ACTIVE', inactiveAt: null, inactiveReason: null })));
   }
 
   async update(id: string, patch: PositionPatch): Promise<PositionModel> {
@@ -143,6 +143,7 @@ const toPosition = (e: JobPositionEntity): PositionModel => ({
   title: e.title,
   level: e.level,
   isLeader: e.isLeader,
+  isSupport: e.isSupport,
   reportsToPositionId: e.reportsToPositionId,
   duties: e.duties,
   referenceOkr: e.referenceOkr,

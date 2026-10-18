@@ -139,6 +139,11 @@ export class CreatePositionDto {
   @IsBoolean()
   isLeader?: boolean;
 
+  /** Người lao động làm công tác hỗ trợ, phục vụ (ADR-053). */
+  @IsOptional()
+  @IsBoolean()
+  isSupport?: boolean;
+
   @IsOptional()
   @IsUUID()
   reportsToPositionId?: string;
@@ -172,6 +177,10 @@ export class UpdatePositionDto {
   @IsOptional()
   @IsBoolean()
   isLeader?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isSupport?: boolean;
 
   /** Truyền null để bỏ cấp trên (chỉ hợp lệ với cấp 1). */
   @IsOptional()

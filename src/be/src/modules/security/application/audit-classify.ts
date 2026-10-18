@@ -8,6 +8,8 @@ export const AUDIT_MODULES = [
   'reporting',
   'documents',
   'notifications',
+  'project',
+  'meeting',
   'system',
 ] as const;
 export type AuditModule = (typeof AUDIT_MODULES)[number];
@@ -40,14 +42,24 @@ const MODULE_BY_PREFIX: Record<string, AuditModule> = {
   report: 'reporting',
   document: 'documents',
   notification: 'notifications',
+  project: 'project',
+  meeting: 'meeting',
 };
 
 /** Quy tắc theo thứ tự: quy tắc đầu tiên khớp thì dùng. Khớp với toàn bộ chuỗi hành động. */
 const TYPE_RULES: [RegExp, AuditType][] = [
+  [/^project\.(submit|complete)$/, 'APPROVE'],
+  [/^meeting\.(respond|conclude)$/, 'APPROVE'],
+  [/^meeting\.action\.add$/, 'CREATE'],
+  [/^meeting\.action\.(done|reopen)$/, 'UPDATE'],
+  [/^project\.(member|milestone)\.add$/, 'CREATE'],
+  [/^project\.(milestone\.(done|reopen)|link|unlink)$/, 'UPDATE'],
   [/^access-review\.export$/, 'EXPORT'],
   [/^access-review\./, 'REVIEW'],
   [/^unit-complaint\.(verify|close)$/, 'APPROVE'],
-  [/^auth\.(login|logout|account\.locked)/, 'LOGIN'],
+  [/^auth\.(login|logout|account\.locked|mfa\.(failure|recovery-used|enroll))/, 'LOGIN'],
+  [/^auth\.mfa\.(disable|recovery-regenerate)$/, 'UPDATE'],
+  [/^account\.mfa\.reset$/, 'STATUS_CHANGE'],
   [/^access\.denied$/, 'ACCESS'],
   [/export/, 'EXPORT'],
   [/(^|\.)(read|view|list|download|trend|draft|verify)$/, 'ACCESS'],
@@ -59,7 +71,7 @@ const TYPE_RULES: [RegExp, AuditType][] = [
   [/(^|\.)(create|generate|grant|upload|import|publish|apply)$/, 'CREATE'],
   [/^evaluation\.task\.assign$/, 'CREATE'],
   [/^org\.import$/, 'CREATE'],
-  [/(^|\.)(update|rename|scope|set|replace|deadline|result|link-person|unlink-person|leave\.update|axes\.update)$/, 'UPDATE'],
+  [/(^|\.)(update|rename|scope|set|replace|deadline|result|link-person|unlink-person|leave\.update|axes\.update|axes\.reset)$/, 'UPDATE'],
   [/^catalog\.baseline\.set$/, 'UPDATE'],
   [/^tasking\.progress\.report$/, 'CREATE'],
 ];

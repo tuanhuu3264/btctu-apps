@@ -7,11 +7,14 @@ import { GENESIS_HASH } from './audit.model.js';
 import { AuditService } from './audit.service.js';
 import { AuthorizationService } from './authorization.service.js';
 import { AuthService } from './auth.service.js';
+import type { LoginResult } from './auth.service.js';
+import { MfaService } from './mfa.service.js';
 import { PasswordAuthenticator } from './password-authenticator.js';
 import {
   AccountRepository,
   AuditLogRepository,
   Authenticator,
+  MfaRepository,
   PasswordHasher,
   RoleAssignmentRepository,
   SessionRepository,
@@ -24,6 +27,7 @@ import {
   FakeHasher,
   InMemoryAccounts,
   InMemoryAuditLog,
+  InMemoryMfa,
   InMemoryRoleAssignments,
   InMemorySessions,
 } from './testing/in-memory.js';
@@ -284,6 +288,8 @@ describe('các sự kiện nghiệp vụ được ghi nhật ký', () => {
         SessionService,
         AuditService,
         AuthorizationService,
+        MfaService,
+        { provide: MfaRepository, useClass: InMemoryMfa },
         { provide: SecurityConfig, useValue: config },
         { provide: Clock, useValue: clock },
         { provide: PasswordHasher, useClass: FakeHasher },
@@ -310,7 +316,7 @@ describe('các sự kiện nghiệp vụ được ghi nhật ký', () => {
 
   it('đăng nhập thành công ghi người thực hiện; đăng xuất ghi khi có ngữ cảnh', async () => {
     await accountService.create({ username: 'quantri', password: PASSWORD });
-    const { account, session } = await auth.login({ username: 'quantri', password: PASSWORD });
+    const { account, session } = (await auth.login({ username: 'quantri', password: PASSWORD })) as LoginResult;
     expect(log.rows.at(-1)).toMatchObject({ action: 'auth.login.success', actorUsername: 'quantri', actorAccountId: account.id });
 
     await requestContext.run({ requestId: '11111111-1111-4111-8111-111111111111', ip: null, actor: { id: account.id, username: 'quantri' } }, () =>

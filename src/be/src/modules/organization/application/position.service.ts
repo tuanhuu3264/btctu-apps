@@ -7,6 +7,7 @@ import { AssignmentRepository, PositionRepository } from './org.ports.js';
 import { UnitService } from './unit.service.js';
 
 const CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{2,79}$/;
+const SUPPORT_NOT_LEADER = 'Vị trí hỗ trợ, phục vụ không đồng thời là vị trí lãnh đạo, quản lý';
 
 @Injectable()
 export class PositionService {
@@ -44,18 +45,19 @@ export class PositionService {
     if (await this.positions.findByCode(input.code)) {
       throw new ConflictException(`Mã vị trí đã tồn tại: ${input.code}`);
     }
+    if (input.isSupport && input.isLeader) throw new BadRequestException(SUPPORT_NOT_LEADER);
     await this.assertUnitActive(input.unitId);
     const all = await this.positions.findAll();
     this.assertTreeRules(input, null, all);
     this.assertParentActive(input.reportsToPositionId, all);
 
-    const created = await this.positions.create(input);
+    const created = await this.positions.create(input.isSupport && input.isLeader === undefined ? { ...input, isLeader: false } : input);
     await this.audit.record({
       action: 'position.create',
       outcome: 'SUCCESS',
       targetType: 'position',
       targetId: created.id,
-      details: { code: created.code, title: created.title, level: created.level, isLeader: created.isLeader, reportsTo: created.reportsToPositionId },
+      details: { code: created.code, title: created.title, level: created.level, isLeader: created.isLeader, isSupport: created.isSupport, reportsTo: created.reportsToPositionId },
     });
     return created;
   }
@@ -64,6 +66,7 @@ export class PositionService {
     const current = await this.get(id);
     if (patch.unitId !== undefined && patch.unitId !== current.unitId) await this.assertUnitActive(patch.unitId);
     const after: PositionModel = { ...current, ...patch };
+    if (after.isSupport && after.isLeader) throw new BadRequestException(SUPPORT_NOT_LEADER);
     const all = await this.positions.findAll();
     this.assertTreeRules(after, current.id, all);
     if (patch.reportsToPositionId !== undefined && patch.reportsToPositionId !== current.reportsToPositionId) {

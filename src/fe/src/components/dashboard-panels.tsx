@@ -1,11 +1,12 @@
 'use client';
 
-import { Alert, Card, Empty, List, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Card, Col, Empty, List, Row, Space, Table, Tag, Typography } from 'antd';
 import Link from 'next/link';
+import { useState } from 'react';
 import { HBars } from '@/components/charts';
 import { RatingTag, StatusTag } from '@/components/status-tags';
-import type { AccessReviewView, Deadline, PeriodReport, SearchResult, TaskStatistics } from '@/lib/api';
-import { num } from '@/lib/labels';
+import type { AccessReviewView, Deadline, EarlyWarning, MeetingRow, MyMeetingAction, PeriodReport, ProjectWarnings, SearchResult, TaskStatistics } from '@/lib/api';
+import { dmyText, hhmmText, meetingTimeText, num } from '@/lib/labels';
 import { useRemote } from '@/lib/use-remote';
 
 export type DashboardMode = 'BAN' | 'PHONG' | 'CA_NHAN';
@@ -89,6 +90,169 @@ export function AttentionPanel({
   return (
     <Card size="small" title="Cần xử lý">
       <Rows rows={rows.filter((r) => r.count === null || r.count > 0)} />
+    </Card>
+  );
+}
+
+/**
+ * Cảnh báo sớm: việc có nguy cơ chậm (sắp đến hạn mà chưa làm nhiều, hoặc chậm so với tiến độ thời gian), để nhắc kịp thời.
+ * Quy tắc đơn giản trên số liệu có sẵn, không đổi điểm; chậm thật vẫn tính khi việc được xác nhận sau hạn.
+ */
+export function EarlyWarningPanel({ scope, version }: { scope: 'mine' | 'team' | 'all'; version: number }) {
+  const { data, error } = useRemote<EarlyWarning>(`/tasking/assignments/early-warning?scope=${scope}`, version);
+  if (error) return <Alert type="error" showIcon message={error} />;
+  const items = (data?.items ?? []).slice(0, 8);
+  return (
+    <Card
+      size="small"
+      title="Cảnh báo sớm"
+      extra={data ? <Space size={4}><Tag color="red">{data.high} nguy cơ cao</Tag><Tag color="gold">{data.medium} cần theo dõi</Tag></Space> : null}
+    >
+      <List
+        size="small"
+        loading={!data}
+        dataSource={items}
+        locale={{ emptyText: 'Chưa có việc nào có nguy cơ chậm.' }}
+        renderItem={(i) => (
+          <List.Item>
+            <Link href="/tasks" style={{ flex: 1 }}>
+              {i.title}
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {scope !== 'mine' && i.assigneeName ? `${i.assigneeName} · ` : ''}hạn {i.dueDate} · {i.text}
+                </Typography.Text>
+              </div>
+            </Link>
+            <Tag color={i.level === 'HIGH' ? 'red' : 'gold'}>{i.level === 'HIGH' ? 'Cao' : 'Theo dõi'}</Tag>
+          </List.Item>
+        )}
+      />
+      {data && data.items.length > items.length && (
+        <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+          Còn {data.items.length - items.length} cảnh báo khác. <Link href="/tasks">Xem trong Việc được giao</Link>
+        </Typography.Paragraph>
+      )}
+      {scope !== 'mine' && data && data.byAssignee.length > 0 && (
+        <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0', fontSize: 12 }}>
+          Cần nhắc: {data.byAssignee.slice(0, 5).map((p) => `${p.name ?? 'cán bộ'} (${p.high + p.medium})`).join(', ')}
+        </Typography.Paragraph>
+      )}
+    </Card>
+  );
+}
+
+/** Mốc đề án, dự án (ADR-050): mốc quá hạn, sắp đến hạn và đề án quá ngày kết thúc mà chưa nghiệm thu. */
+export function ProjectWarningPanel({ scope, version }: { scope: 'mine' | 'team' | 'all'; version: number }) {
+  const { data, error } = useRemote<ProjectWarnings>(`/projects/early-warning?scope=${scope}`, version);
+  if (error) return <Alert type="error" showIcon message={error} />;
+  const items = (data?.items ?? []).slice(0, 8);
+  return (
+    <Card
+      size="small"
+      title="Mốc đề án, dự án"
+      extra={data ? <Space size={4}><Tag color="red">{data.high} nguy cơ cao</Tag><Tag color="gold">{data.medium} cần theo dõi</Tag></Space> : null}
+    >
+      <List
+        size="small"
+        loading={!data}
+        dataSource={items}
+        locale={{ emptyText: 'Chưa có mốc nào quá hạn hoặc sắp đến hạn.' }}
+        renderItem={(i) => (
+          <List.Item>
+            <Link href={`/projects/${i.projectId}`} style={{ flex: 1 }}>
+              <Typography.Text code>{i.projectCode}</Typography.Text> {i.milestoneTitle ?? i.projectTitle}
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {scope !== 'mine' ? `${i.ownerName} · ` : ''}hạn {i.dueDate.split('-').reverse().join('/')} · {i.text}
+                </Typography.Text>
+              </div>
+            </Link>
+            <Tag color={i.level === 'HIGH' ? 'red' : 'gold'}>{i.level === 'HIGH' ? 'Cao' : 'Theo dõi'}</Tag>
+          </List.Item>
+        )}
+      />
+      {data && data.items.length > items.length && (
+        <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+          Còn {data.items.length - items.length} cảnh báo khác. <Link href="/projects">Xem trong Đề án, dự án</Link>
+        </Typography.Paragraph>
+      )}
+    </Card>
+  );
+}
+
+/** Lịch họp sắp tới trong 7 ngày và việc sau họp còn mở của chính người dùng (ADR-051). */
+export function MeetingPanel({ version }: { version: number }) {
+  // Khoảng 7 ngày tính một lần khi khối được dựng (đổi ở mỗi lần dựng sẽ làm tải lặp); vào lại trang thì tính lại.
+  const [range] = useState(() => {
+    const now = Date.now();
+    return `from=${encodeURIComponent(new Date(now).toISOString())}&to=${encodeURIComponent(new Date(now + 7 * 86_400_000).toISOString())}`;
+  });
+  const meetings = useRemote<MeetingRow[]>(`/meetings?${range}&scope=mine`, version);
+  const actions = useRemote<MyMeetingAction[]>('/meetings/my-actions', version);
+  const error = meetings.error ?? actions.error;
+  const upcoming = (meetings.data ?? []).filter((r) => r.meeting.status !== 'CANCELLED');
+  const open = actions.data ?? [];
+
+  return (
+    <Card size="small" title="Lịch họp sắp tới và việc sau họp" extra={<Link href="/meetings">Xem lịch họp</Link>}>
+      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
+      <Row gutter={[16, 16]}>
+        <Col xs={24} md={12}>
+          <Typography.Text strong>Họp trong 7 ngày tới ({upcoming.length})</Typography.Text>
+          <List
+            size="small"
+            loading={meetings.loading && meetings.data === null}
+            dataSource={upcoming.slice(0, 8)}
+            locale={{ emptyText: 'Không có cuộc họp nào trong 7 ngày tới.' }}
+            renderItem={(r) => (
+              <List.Item>
+                <Link href={`/meetings/${r.meeting.id}`} style={{ flex: 1, minWidth: 0 }}>
+                  {r.meeting.title}
+                  <div>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {hhmmText(r.meeting.startAt)} {meetingTimeText(r.meeting.startAt).slice(6)}
+                      {r.meeting.location ? ` · ${r.meeting.location}` : ''}
+                    </Typography.Text>
+                  </div>
+                </Link>
+                {r.myResponse === 'PENDING' && <Tag color="gold">Chưa trả lời</Tag>}
+              </List.Item>
+            )}
+          />
+          {upcoming.length > 8 && (
+            <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+              Còn {upcoming.length - 8} cuộc họp khác. <Link href="/meetings">Xem lịch họp</Link>
+            </Typography.Paragraph>
+          )}
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text strong>Việc sau họp còn mở ({open.length})</Typography.Text>
+          <List
+            size="small"
+            loading={actions.loading && actions.data === null}
+            dataSource={open.slice(0, 8)}
+            locale={{ emptyText: 'Không có việc sau họp nào còn mở.' }}
+            renderItem={(a) => (
+              <List.Item>
+                <Link href={`/meetings/${a.action.meetingId}`} style={{ flex: 1, minWidth: 0 }}>
+                  {a.action.content}
+                  <div>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {a.meetingTitle}
+                    </Typography.Text>
+                  </div>
+                </Link>
+                <Tag color={a.overdue ? 'red' : 'blue'}>{a.overdue ? 'Quá hạn ' : 'Hạn '}{dmyText(a.action.dueDate)}</Tag>
+              </List.Item>
+            )}
+          />
+          {open.length > 8 && (
+            <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+              Còn {open.length - 8} việc khác.
+            </Typography.Paragraph>
+          )}
+        </Col>
+      </Row>
     </Card>
   );
 }

@@ -112,6 +112,7 @@ export class InMemoryPositions extends PositionRepository {
     const row: PositionModel = {
       ...data,
       isLeader: data.isLeader ?? defaultIsLeader(data.level),
+      isSupport: data.isSupport ?? false,
       status: 'ACTIVE',
       inactiveAt: null,
       inactiveReason: null,

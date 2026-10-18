@@ -1,10 +1,10 @@
 'use client';
 
 import { CheckOutlined, CloseOutlined } from '@ant-design/icons';
-import { Button, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Radio, Space, Table, Tag } from 'antd';
+import { Button, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Radio, Space, Table, Tag } from 'antd';
 import type { TablePaginationConfig } from 'antd';
 import { useState } from 'react';
-import type { AssignmentView, ProgressStatus, SearchScope, WorkProgress } from '@/lib/api';
+import type { AssignmentView, ProgressStatus, SearchScope, WorkProgress, WorkWaiver } from '@/lib/api';
 import { apiCall } from '@/lib/client';
 import { dateText, PROGRESS_LABELS, REPORT_KIND_LABELS, STATE_COLORS, STATE_LABELS } from '@/lib/labels';
 import { useAction } from '@/lib/use-action';
@@ -35,6 +35,9 @@ interface Props {
 
 const PROGRESS_COLORS: Record<ProgressStatus, string> = { REPORTED: 'processing', CONFIRMED: 'success', REJECTED: 'error' };
 
+/** Miễn trừ đang hiệu lực của một lần báo cáo, nếu có. */
+const activeWaiver = (v: AssignmentView, p: WorkProgress): WorkWaiver | null => v.waivers.find((w) => w.progressId === p.id && w.revokedAt === null) ?? null;
+
 function ReportModal({ view, onClose }: { view: AssignmentView; onClose: () => void }) {
   const { run, busy } = useAction();
   const [form] = Form.useForm<{ quantity: number; completedOn: { format: (p: string) => string }; evidence?: string }>();
@@ -63,7 +66,7 @@ function ReportModal({ view, onClose }: { view: AssignmentView; onClose: () => v
         <Form.Item name="quantity" label="Số lượng đã hoàn thành lần này" rules={[{ required: true, message: 'Nhập số lượng' }]}>
           <InputNumber min={1} max={100000} precision={0} />
         </Form.Item>
-        <Form.Item name="completedOn" label="Ngày hoàn thành" rules={[{ required: true, message: 'Chọn ngày' }]} extra="Sau hạn sẽ được tính là một lần chậm khi cấp trên xác nhận.">
+        <Form.Item name="completedOn" label="Ngày hoàn thành" rules={[{ required: true, message: 'Chọn ngày' }]} extra="Sau hạn sẽ được tính là một lần chậm khi cấp trên xác nhận. Nếu chậm do nguyên nhân khách quan, ghi rõ vào ô Minh chứng để cấp trên xem xét miễn trừ.">
           <DatePicker format="DD/MM/YYYY" disabledDate={(d) => d.valueOf() > Date.now()} />
         </Form.Item>
         <Form.Item name="evidence" label="Minh chứng">
@@ -76,12 +79,13 @@ function ReportModal({ view, onClose }: { view: AssignmentView; onClose: () => v
 
 function RejectModal({ progress, onClose }: { progress: WorkProgress; onClose: () => void }) {
   const { run, busy } = useAction();
-  const [form] = Form.useForm<{ note: string; majorError: boolean }>();
+  const [form] = Form.useForm<{ note: string; majorError: boolean; objective?: boolean; objectiveReason?: string }>();
+  const major = Form.useWatch('majorError', form);
+  const objective = Form.useWatch('objective', form);
 
-  async function submit(v: { note: string; majorError: boolean }) {
-    const ok = await run(async () => void (await apiCall('POST', `/tasking/progress/${progress.id}/decision`, { decision: 'REJECT', note: v.note.trim(), majorError: v.majorError })), {
-      success: 'Đã từ chối báo cáo',
-    });
+  async function submit(v: { note: string; majorError: boolean; objective?: boolean; objectiveReason?: string }) {
+    const body = { decision: 'REJECT', note: v.note.trim(), majorError: v.majorError, ...(v.majorError && v.objective ? { objectiveReason: v.objectiveReason?.trim() } : {}) };
+    const ok = await run(async () => void (await apiCall('POST', `/tasking/progress/${progress.id}/decision`, body)), { success: 'Đã từ chối báo cáo' });
     if (ok) onClose();
   }
 
@@ -103,6 +107,91 @@ function RejectModal({ progress, onClose }: { progress: WorkProgress; onClose: (
         <Form.Item name="note" label="Lý do" rules={[{ required: true, whitespace: true, min: 3, message: 'Nhập lý do (ít nhất 3 ký tự)' }]}>
           <Input.TextArea rows={3} maxLength={2000} />
         </Form.Item>
+        {major === true && (
+          <>
+            <Form.Item name="objective" valuePropName="checked">
+              <Checkbox>Sai sót do nguyên nhân khách quan, không trừ điểm (Điều 14.2.b)</Checkbox>
+            </Form.Item>
+            {objective && <ObjectiveReasonItem name="objectiveReason" />}
+          </>
+        )}
+      </Form>
+    </Modal>
+  );
+}
+
+/** Ô nhập nguyên nhân khách quan và căn cứ xác nhận (Nghị định 335/2025 Điều 14.2.b, c). */
+function ObjectiveReasonItem({ name, label = 'Nguyên nhân khách quan và căn cứ xác nhận' }: { name: string; label?: string }) {
+  return (
+    <Form.Item name={name} label={label} rules={[{ required: true, whitespace: true, min: 10, message: 'Nêu nguyên nhân và căn cứ (ít nhất 10 ký tự)' }]}>
+      <Input.TextArea rows={3} maxLength={2000} placeholder="Ví dụ: mất điện diện rộng, có xác nhận của Văn phòng ngày ..." />
+    </Form.Item>
+  );
+}
+
+/** Xác nhận báo cáo trễ hạn: có thể miễn trừ ngay nếu chậm do nguyên nhân khách quan. */
+function ConfirmLateModal({ progress, onClose }: { progress: WorkProgress; onClose: () => void }) {
+  const { run, busy } = useAction();
+  const [form] = Form.useForm<{ objective?: boolean; objectiveReason?: string }>();
+  const objective = Form.useWatch('objective', form);
+
+  async function submit(v: { objective?: boolean; objectiveReason?: string }) {
+    const body = { decision: 'CONFIRM', ...(v.objective ? { objectiveReason: v.objectiveReason?.trim() } : {}) };
+    const ok = await run(async () => void (await apiCall('POST', `/tasking/progress/${progress.id}/decision`, body)), { success: 'Đã xác nhận' });
+    if (ok) onClose();
+  }
+
+  return (
+    <Modal title="Xác nhận báo cáo trễ hạn" open onCancel={onClose} onOk={() => form.submit()} okText="Xác nhận" cancelText="Hủy" confirmLoading={busy}>
+      <p>Báo cáo {progress.quantity} sản phẩm hoàn thành ngày {dateText(progress.completedOn)}, sau hạn. Xác nhận thì tính là một lần chậm, bị trừ 25% điểm tiến độ của công việc đó.</p>
+      <Form form={form} layout="vertical" onFinish={submit}>
+        <Form.Item name="objective" valuePropName="checked" extra="Nghị định 335/2025/NĐ-CP Điều 14.2.c: chậm tiến độ do nguyên nhân khách quan được cấp có thẩm quyền xác nhận thì không bị trừ.">
+          <Checkbox>Chậm do nguyên nhân khách quan, không trừ điểm</Checkbox>
+        </Form.Item>
+        {objective && <ObjectiveReasonItem name="objectiveReason" />}
+      </Form>
+    </Modal>
+  );
+}
+
+/** Miễn trừ sau khi đã duyệt, hoặc thu hồi miễn trừ đã cấp. */
+function WaiverModal({ progress, active, onClose }: { progress: WorkProgress; active: WorkWaiver | null; onClose: () => void }) {
+  const { run, busy } = useAction();
+  const [form] = Form.useForm<{ text: string }>();
+  const revoking = active !== null;
+
+  async function submit(v: { text: string }) {
+    const path = `/tasking/progress/${progress.id}/waiver${revoking ? '/revoke' : ''}`;
+    const ok = await run(async () => void (await apiCall('POST', path, revoking ? { note: v.text.trim() } : { reason: v.text.trim() })), {
+      success: revoking ? 'Đã thu hồi miễn trừ' : 'Đã miễn trừ',
+    });
+    if (ok) onClose();
+  }
+
+  return (
+    <Modal
+      title={revoking ? 'Thu hồi miễn trừ' : 'Miễn trừ do nguyên nhân khách quan'}
+      open
+      onCancel={onClose}
+      onOk={() => form.submit()}
+      okText={revoking ? 'Thu hồi' : 'Miễn trừ'}
+      okButtonProps={{ danger: revoking }}
+      cancelText="Hủy"
+      confirmLoading={busy}
+    >
+      {revoking ? (
+        <p>Miễn trừ hiện có: {active.reason}. Thu hồi thì lần này tính lại như bình thường ở hồ sơ kỳ được làm mới sau đó.</p>
+      ) : (
+        <p>Lần này không bị trừ 25% (Nghị định 335/2025/NĐ-CP Điều 14.2.b, c). Hồ sơ kỳ đã tự chấm thì số liệu đã chốt, không đổi.</p>
+      )}
+      <Form form={form} layout="vertical" onFinish={submit}>
+        <Form.Item
+          name="text"
+          label={revoking ? 'Lý do thu hồi' : 'Nguyên nhân khách quan và căn cứ xác nhận'}
+          rules={[{ required: true, whitespace: true, min: revoking ? 3 : 10, message: revoking ? 'Nhập lý do (ít nhất 3 ký tự)' : 'Nêu nguyên nhân và căn cứ (ít nhất 10 ký tự)' }]}
+        >
+          <Input.TextArea rows={3} maxLength={2000} />
+        </Form.Item>
       </Form>
     </Modal>
   );
@@ -112,6 +201,8 @@ export default function AssignmentTable({ rows, mode, myPersonId, names, canRepo
   const { run, busy } = useAction();
   const [reporting, setReporting] = useState<AssignmentView | null>(null);
   const [rejecting, setRejecting] = useState<WorkProgress | null>(null);
+  const [confirmingLate, setConfirmingLate] = useState<WorkProgress | null>(null);
+  const [waiving, setWaiving] = useState<{ progress: WorkProgress; active: WorkWaiver | null } | null>(null);
 
   const statusTag = (v: AssignmentView) => <Tag color={STATE_COLORS[v.state]}>{STATE_LABELS[v.state]}</Tag>;
   // Hủy việc là quyền của cấp trên trực tiếp (người giao), khác người duyệt (cc) có thể là cấp trên xa hơn.
@@ -186,6 +277,7 @@ export default function AssignmentTable({ rows, mode, myPersonId, names, canRepo
                 {statusTag(v)}
                 {v.summary.lateCount > 0 && <Tag color="orange">chậm {v.summary.lateCount}</Tag>}
                 {v.summary.reworkCount > 0 && <Tag color="volcano">chưa đạt {v.summary.reworkCount}</Tag>}
+                {v.summary.waivedLateCount + v.summary.waivedReworkCount > 0 && <Tag color="green">miễn trừ {v.summary.waivedLateCount + v.summary.waivedReworkCount}</Tag>}
               </>
             ),
           },
@@ -242,29 +334,49 @@ export default function AssignmentTable({ rows, mode, myPersonId, names, canRepo
                       <Tag color={PROGRESS_COLORS[p.status]}>{PROGRESS_LABELS[p.status]}</Tag>
                       {p.status === 'CONFIRMED' && p.completedOn > v.assignment.dueDate && <Tag color="orange">chậm</Tag>}
                       {p.decisionNote && <span style={{ color: '#888' }}>{p.decisionNote}</span>}
+                      {activeWaiver(v, p) && <div style={{ color: '#389e0d' }}>Miễn trừ ({activeWaiver(v, p)!.kind === 'LATE' ? 'chậm' : 'chưa đạt'}): {activeWaiver(v, p)!.reason}</div>}
                     </>
                   ),
                 },
                 {
                   title: '',
-                  width: 200,
-                  render: (_: unknown, p: WorkProgress) =>
-                    canConfirm && iConfirm(v) && p.status === 'REPORTED' && v.assignment.status === 'OPEN' ? (
-                      <Space>
-                        <Button
-                          size="small"
-                          type="primary"
-                          icon={<CheckOutlined />}
-                          loading={busy}
-                          onClick={() => run(async () => void (await apiCall('POST', `/tasking/progress/${p.id}/decision`, { decision: 'CONFIRM' })), { success: 'Đã xác nhận' })}
-                        >
-                          Xác nhận
+                  width: 220,
+                  render: (_: unknown, p: WorkProgress) => {
+                    if (!canConfirm || !iConfirm(v)) return null;
+                    if (p.status === 'REPORTED' && v.assignment.status === 'OPEN') {
+                      const late = p.completedOn > v.assignment.dueDate;
+                      return (
+                        <Space>
+                          <Button
+                            size="small"
+                            type="primary"
+                            icon={<CheckOutlined />}
+                            loading={busy}
+                            onClick={() => (late ? setConfirmingLate(p) : run(async () => void (await apiCall('POST', `/tasking/progress/${p.id}/decision`, { decision: 'CONFIRM' })), { success: 'Đã xác nhận' }))}
+                          >
+                            Xác nhận
+                          </Button>
+                          <Button size="small" danger icon={<CloseOutlined />} onClick={() => setRejecting(p)}>
+                            Từ chối
+                          </Button>
+                        </Space>
+                      );
+                    }
+                    const active = activeWaiver(v, p);
+                    if (active) {
+                      return (
+                        <Button size="small" onClick={() => setWaiving({ progress: p, active })}>
+                          Thu hồi miễn trừ
                         </Button>
-                        <Button size="small" danger icon={<CloseOutlined />} onClick={() => setRejecting(p)}>
-                          Từ chối
-                        </Button>
-                      </Space>
-                    ) : null,
+                      );
+                    }
+                    const penalized = (p.status === 'CONFIRMED' && p.completedOn > v.assignment.dueDate) || (p.status === 'REJECTED' && p.majorError === true);
+                    return penalized ? (
+                      <Button size="small" onClick={() => setWaiving({ progress: p, active: null })}>
+                        Miễn trừ
+                      </Button>
+                    ) : null;
+                  },
                 },
               ]}
             />
@@ -273,6 +385,8 @@ export default function AssignmentTable({ rows, mode, myPersonId, names, canRepo
       />
       {reporting && <ReportModal view={reporting} onClose={() => setReporting(null)} />}
       {rejecting && <RejectModal progress={rejecting} onClose={() => setRejecting(null)} />}
+      {confirmingLate && <ConfirmLateModal progress={confirmingLate} onClose={() => setConfirmingLate(null)} />}
+      {waiving && <WaiverModal progress={waiving.progress} active={waiving.active} onClose={() => setWaiving(null)} />}
     </>
   );
 }

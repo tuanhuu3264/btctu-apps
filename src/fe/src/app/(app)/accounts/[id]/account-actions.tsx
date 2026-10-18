@@ -123,6 +123,21 @@ export default function AccountActions({ accountId, status, linkedPersonId, pers
         </Card>
       )}
 
+      {can('account:mfa-reset') && (
+        <Card size="small" title="Xác thực nhiều lớp">
+          <Popconfirm
+            title="Đặt lại xác thực nhiều lớp cho tài khoản này?"
+            description="Xóa thiết bị đã đăng ký và chấm dứt các phiên đang mở. Lần đăng nhập sau phải đăng ký lại. Chỉ làm khi người dùng mất thiết bị và đã xác minh danh tính."
+            okText="Đặt lại"
+            okButtonProps={{ danger: true }}
+            cancelText="Hủy"
+            onConfirm={() => run(async () => void (await apiCall('POST', `/accounts/${accountId}/mfa/reset`)), { success: 'Đã đặt lại xác thực nhiều lớp' })}
+          >
+            <Button loading={busy}>Đặt lại MFA</Button>
+          </Popconfirm>
+        </Card>
+      )}
+
       {can('account:disable') && status === 'ACTIVE' && (
         <Popconfirm
           title="Khóa tài khoản này?"

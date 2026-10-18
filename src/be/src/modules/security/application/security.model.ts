@@ -25,10 +25,12 @@ export interface SessionModel {
   /** SHA-256 của token; token gốc chỉ nằm trong cookie của người dùng. */
   tokenHash: string;
   expiresAt: Date;
+  /** Lần thao tác cuối (đăng nhập hoặc "giữ phiên"); quá hạn không thao tác thì phiên không dùng được nữa (ADR-057). */
+  lastActiveAt: Date;
   revokedAt: Date | null;
 }
 
-export type NewSession = Pick<SessionModel, 'accountId' | 'tokenHash' | 'expiresAt'>;
+export type NewSession = Pick<SessionModel, 'accountId' | 'tokenHash' | 'expiresAt'> & { lastActiveAt?: Date };
 
 /** Thông tin tài khoản được phép đưa ra ngoài (không có mã băm mật khẩu). */
 export interface CurrentAccount {
@@ -40,4 +42,17 @@ export interface CurrentAccount {
 export interface Credentials {
   username: string;
   password: string;
+}
+
+/** Thiết bị TOTP của một tài khoản (ADR-048). Khóa chỉ lưu dạng mã hóa. */
+export interface MfaModel {
+  accountId: string;
+  secretEnc: string;
+  /** false: đang đăng ký, chưa xác nhận bằng mã đầu tiên. */
+  enabled: boolean;
+  /** SHA-256 của các mã khôi phục còn dùng được. */
+  recoveryHashes: string[];
+  /** Bước thời gian của mã được chấp nhận gần nhất, để chặn dùng lại. */
+  lastStep: number | null;
+  enabledAt: Date | null;
 }

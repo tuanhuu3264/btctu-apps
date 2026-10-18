@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, IsNull, Repository } from 'typeorm';
+import { RatingEventRepository } from '../application/rating-events.js';
+import type { NewRatingEvent, RatingEventModel } from '../application/rating-events.js';
 import type {
   EvaluationModel,
   EvaluationPatch,
@@ -19,7 +21,19 @@ import { LeaveRepository } from '../application/leave.js';
 import type { LeaveMonth } from '../application/leave.js';
 import { UnitComplaintRepository } from '../application/unit-complaint.js';
 import type { NewUnitComplaint, UnitComplaintModel, UnitComplaintPatch } from '../application/unit-complaint.js';
-import { EvaluationEntity, EvaluationPeriodEntity, EvaluationTaskEntity, LeaveRecordEntity, UnitAxisEntity, UnitComplaintEntity, UnitEvaluationEntity } from './evaluation.entities.js';
+import { GeneralCriteriaRepository } from '../application/general-criteria.js';
+import type { GeneralCriteriaVersion, NewGeneralCriteriaVersion } from '../application/general-criteria.js';
+import {
+  EvaluationEntity,
+  EvaluationPeriodEntity,
+  EvaluationTaskEntity,
+  GeneralCriteriaVersionEntity,
+  LeaveRecordEntity,
+  RatingEventEntity,
+  UnitAxisEntity,
+  UnitComplaintEntity,
+  UnitEvaluationEntity,
+} from './evaluation.entities.js';
 
 @Injectable()
 export class TypeOrmPeriodRepository extends PeriodRepository {
@@ -157,6 +171,10 @@ const toEvaluation = (e: EvaluationEntity): EvaluationModel => ({
   rating: e.rating,
   scoringParams: e.scoringParams,
   leadership: e.leadership,
+  selfSupport: e.selfSupport,
+  support: e.support,
+  selfGeneral: e.selfGeneral,
+  general: e.general,
   createdBy: e.createdBy,
 });
 
@@ -172,6 +190,8 @@ const toTask = (e: EvaluationTaskEntity): TaskModel => ({
   sourceTaskTitles: e.sourceTaskTitles ?? [],
   lateCount: e.lateCount,
   reworkCount: e.reworkCount,
+  waivedLateCount: e.waivedLateCount,
+  waivedReworkCount: e.waivedReworkCount,
 });
 
 @Injectable()
@@ -241,21 +261,27 @@ const toAxis = (e: UnitAxisEntity): AxisDefinition => ({
   active: e.active,
 });
 
-/** Cấu hình trục chấm điểm tập thể (ADR-036). Thay cả danh sách trong một giao dịch. */
+/** Cấu hình trục chấm điểm tập thể theo bộ (ADR-036, ADR-052). Thay cả một bộ trong một giao dịch. */
 @Injectable()
 export class TypeOrmUnitAxisRepository extends UnitAxisRepository {
   constructor(@InjectRepository(UnitAxisEntity) private readonly repo: Repository<UnitAxisEntity>) {
     super();
   }
 
-  async findAll(): Promise<AxisDefinition[]> {
-    return (await this.repo.find({ order: { sortOrder: 'ASC', code: 'ASC' } })).map(toAxis);
+  async findSet(unitId: string | null): Promise<AxisDefinition[]> {
+    return (await this.repo.find({ where: { unitId: unitId ?? IsNull() }, order: { sortOrder: 'ASC', code: 'ASC' } })).map(toAxis);
   }
 
-  async replaceAll(axes: readonly AxisDefinition[]): Promise<void> {
+  async unitsWithOwnSet(): Promise<string[]> {
+    const rows: { unit_id: string }[] = await this.repo.query(`SELECT DISTINCT unit_id FROM unit_axis WHERE unit_id IS NOT NULL`);
+    return rows.map((r) => r.unit_id);
+  }
+
+  async replaceSet(unitId: string | null, axes: readonly AxisDefinition[]): Promise<void> {
     await this.repo.manager.transaction(async (m) => {
-      await m.getRepository(UnitAxisEntity).clear();
-      await m.getRepository(UnitAxisEntity).save(axes.map((a) => ({ ...a })));
+      const repo = m.getRepository(UnitAxisEntity);
+      await repo.delete({ unitId: unitId ?? IsNull() });
+      if (axes.length > 0) await repo.save(axes.map((a) => ({ ...a, unitId })));
     });
   }
 }
@@ -326,6 +352,80 @@ export class TypeOrmUnitComplaintRepository extends UnitComplaintRepository {
   async update(id: string, patch: UnitComplaintPatch): Promise<UnitComplaintModel> {
     await this.repo.update({ id }, patch);
     return toComplaint(await this.repo.findOneByOrFail({ id }));
+  }
+}
+
+const toCriteriaVersion = (e: GeneralCriteriaVersionEntity): GeneralCriteriaVersion => ({
+  id: e.id,
+  effectiveFrom: e.effectiveFrom,
+  leader: e.leader,
+  staff: e.staff,
+  note: e.note,
+  createdBy: e.createdBy,
+  createdAt: e.createdAt,
+});
+
+/** Phiên bản bảng tiêu chí chung của cá nhân (ADR-054). */
+@Injectable()
+export class TypeOrmGeneralCriteriaRepository extends GeneralCriteriaRepository {
+  constructor(@InjectRepository(GeneralCriteriaVersionEntity) private readonly repo: Repository<GeneralCriteriaVersionEntity>) {
+    super();
+  }
+
+  async findAll(): Promise<GeneralCriteriaVersion[]> {
+    return (await this.repo.find({ order: { effectiveFrom: 'ASC' } })).map(toCriteriaVersion);
+  }
+
+  async findById(id: string): Promise<GeneralCriteriaVersion | null> {
+    const row = await this.repo.findOneBy({ id });
+    return row ? toCriteriaVersion(row) : null;
+  }
+
+  async create(data: NewGeneralCriteriaVersion): Promise<GeneralCriteriaVersion> {
+    return toCriteriaVersion(await this.repo.save(this.repo.create(data)));
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.repo.delete({ id });
+  }
+}
+
+const toRatingEvent = (e: RatingEventEntity): RatingEventModel => ({
+  id: e.id,
+  personId: e.personId,
+  kind: e.kind,
+  effectiveDate: e.effectiveDate,
+  decisionNo: e.decisionNo,
+  form: e.form,
+  system: e.system,
+  reason: e.reason,
+  note: e.note,
+  createdBy: e.createdBy,
+  createdAt: e.createdAt,
+});
+
+/** Sự kiện ảnh hưởng xếp loại cá nhân (ADR-055). */
+@Injectable()
+export class TypeOrmRatingEventRepository extends RatingEventRepository {
+  constructor(@InjectRepository(RatingEventEntity) private readonly repo: Repository<RatingEventEntity>) {
+    super();
+  }
+
+  async findByPerson(personId: string, from: string, to: string): Promise<RatingEventModel[]> {
+    return (await this.repo.find({ where: { personId, effectiveDate: Between(from, to) }, order: { effectiveDate: 'ASC', createdAt: 'ASC' } })).map(toRatingEvent);
+  }
+
+  async findById(id: string): Promise<RatingEventModel | null> {
+    const row = await this.repo.findOneBy({ id });
+    return row ? toRatingEvent(row) : null;
+  }
+
+  async create(data: NewRatingEvent): Promise<RatingEventModel> {
+    return toRatingEvent(await this.repo.save(this.repo.create(data)));
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.repo.delete({ id });
   }
 }
 

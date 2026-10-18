@@ -29,6 +29,8 @@ export interface OrgPosition {
   level: number;
   /** Giữ vị trí này là cán bộ lãnh đạo, quản lý (ADR-022). */
   isLeader: boolean;
+  /** Vị trí của người lao động hỗ trợ, phục vụ (ADR-053). */
+  isSupport: boolean;
   reportsToPositionId: string | null;
   /** Xóa mềm (PLAN-A A1): vị trí ngừng sử dụng chỉ có khi lấy kèm `includeInactive`. */
   status: 'ACTIVE' | 'INACTIVE';
@@ -258,6 +260,9 @@ export interface EvaluationTask {
   sourceTaskTitles: string[];
   lateCount: number;
   reworkCount: number;
+  /** Số lần đã được miễn trừ do nguyên nhân khách quan; không nằm trong hai số trên. */
+  waivedLateCount: number;
+  waivedReworkCount: number;
 }
 
 /** Ba tiêu chí lãnh đạo, chỉ đạo (D): mỗi tiêu chí là 1 (đạt 100%) hoặc 0,5 (đạt 50%). */
@@ -288,6 +293,14 @@ export interface EvaluationDetail {
     notRatedReason: string | null;
     resultScore: number | null;
     leadership: Leadership | null;
+    /** Vị trí hỗ trợ, phục vụ (ADR-053): ba tiêu chí tự đánh giá và do người quản lý đánh giá. */
+    selfSupport: SupportScores | null;
+    support: SupportScores | null;
+    /** Tiêu chí chung chấm theo mục (ADR-054); null khi kỳ chấm một ô 0–30 hoặc chưa chấm. */
+    selfGeneral: GeneralMarks | null;
+    general: GeneralMarks | null;
+    /** Tham số tính điểm lưu khi thẩm định; kỳ năm có `conditions`, `exception` (ADR-055). */
+    scoringParams: { exception?: { code: string; note: string } } | null;
   };
   period: Period;
   tasks: EvaluationTask[];
@@ -296,11 +309,82 @@ export interface EvaluationDetail {
   approverPersonId: string | null;
   /** Cán bộ lãnh đạo, quản lý được chấm thêm tiêu chí D. */
   isLeader: boolean;
+  /** Vị trí hỗ trợ, phục vụ: chấm ba tiêu chí a, b, c thay cho chỉ tiêu (ADR-053). */
+  isSupport: boolean;
   leadershipSuggestion: { unitResult: number | null; solidarity: number | null; solidarityReason: string | null } | null;
   /** Kỳ năm: điểm các tháng đã phê duyệt và trung bình (ADR-035); null với kỳ khác. */
   yearAverage: YearAverage | null;
   warnings: string[];
+  /** Bảng tiêu chí chung của hồ sơ (ADR-054); null với kỳ năm và kỳ chấm một ô 0–30. */
+  generalCriteria: (GeneralCriteriaSet & { versionId: string; effectiveFrom: string; note: string | null; group: GeneralGroup; groupLabel: string }) | null;
+  /** Hạn chế người thẩm định nêu ở kỳ cùng loại liền trước. */
+  previous: { periodLabel: string; reviewComment: string | null; limitations: { code: string; name: string; note: string | null }[] } | null;
+  /** Kỷ luật, kết luận... có hiệu lực trong kỳ (kỳ năm: cả năm) (ADR-055). */
+  ratingEvents: RatingEvent[];
+  /** Mục tiêu chí chung bắt buộc Không đảm bảo trong kỳ. */
+  forcedItems: { code: string; reasons: string[] }[];
+  /** Kỳ năm: điều kiện xếp loại "Không hoàn thành nhiệm vụ". */
+  yearConditions: YearCondition[];
 }
+
+/** Sự kiện ảnh hưởng xếp loại (ADR-055). */
+export type RatingEventKind = 'KY_LUAT' | 'SUY_THOAI' | 'TIN_NHIEM_THAP' | 'THAM_NHUNG_PHAM_VI';
+export interface RatingEvent {
+  id: string;
+  personId: string;
+  kind: RatingEventKind;
+  effectiveDate: string;
+  decisionNo: string;
+  form: string | null;
+  system: 'DANG' | 'HANH_CHINH' | null;
+  reason: 'CONG_VU' | 'SUY_THOAI' | 'KHAC' | null;
+  note: string | null;
+}
+export interface YearCondition {
+  code: string;
+  text: string;
+  basis: string;
+}
+export const fetchRatingEvents = (personId: string, year: number) => serverFetch<RatingEvent[]>(`/evaluation/persons/${personId}/rating-events?year=${year}`);
+
+/** Tiêu chí chung 30 điểm của cá nhân chấm theo mục (ADR-054). */
+export type GeneralGroup = 'LEADER' | 'STAFF';
+export interface GeneralSection {
+  code: string;
+  name: string;
+}
+export interface GeneralItem {
+  code: string;
+  section: string;
+  name: string;
+  max: number;
+}
+export interface GeneralCriteriaSet {
+  sections: GeneralSection[];
+  items: GeneralItem[];
+}
+export interface GeneralMark {
+  code: string;
+  ok: boolean;
+  note: string | null;
+}
+export interface GeneralMarks {
+  versionId: string;
+  group: GeneralGroup;
+  items: GeneralMark[];
+}
+export interface GeneralCriteriaVersion {
+  id: string;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  leader: GeneralCriteriaSet;
+  staff: GeneralCriteriaSet;
+  note: string | null;
+  createdAt: string;
+  /** Kỳ đã có người tự chấm theo phiên bản này: không xóa được. */
+  usedBy: string[];
+}
+export const fetchGeneralCriteria = () => serverFetch<GeneralCriteriaVersion[]>('/evaluation/general-criteria');
 
 export interface MonthScore {
   month: number;
@@ -467,6 +551,7 @@ export interface Position {
   title: string;
   level: number;
   isLeader: boolean;
+  isSupport: boolean;
   reportsToPositionId: string | null;
   duties: string | null;
   referenceOkr: string | null;
@@ -554,6 +639,17 @@ export interface WorkProgress {
   majorError?: boolean;
 }
 
+/** Miễn trừ do nguyên nhân khách quan của một lần chậm hoặc chưa đạt (ADR-056); đã thu hồi thì có `revokedAt`. */
+export interface WorkWaiver {
+  id: string;
+  progressId: string;
+  kind: 'LATE' | 'REWORK';
+  reason: string;
+  grantedAt: string;
+  revokedAt: string | null;
+  revokeNote: string | null;
+}
+
 /** Nhiệm vụ do cấp trên đặt cho một cán bộ, chứa các công việc lấy từ danh mục. */
 export interface WorkTask {
   id: string;
@@ -568,7 +664,8 @@ export interface AssignmentView {
   itemName: string;
   coefficient: number | null;
   progress: WorkProgress[];
-  summary: { confirmedQuantity: number; pendingQuantity: number; reworkCount: number; lateCount: number; done: boolean };
+  waivers: WorkWaiver[];
+  summary: { confirmedQuantity: number; pendingQuantity: number; reworkCount: number; lateCount: number; waivedLateCount: number; waivedReworkCount: number; done: boolean };
   /** Người xác nhận thực tế: người duyệt (cc) nếu có, không thì cấp trên trực tiếp. */
   confirmerPersonId: string | null;
   approverPersonId: string | null;
@@ -626,6 +723,13 @@ export interface UnitEvaluationRecord {
 
 export type AxisKind = 'GENERAL' | 'RESULT';
 
+/** Ba tiêu chí của người lao động hỗ trợ, phục vụ, mỗi tiêu chí 0–100% (ADR-053). */
+export interface SupportScores {
+  quality: number;
+  compliance: number;
+  efficiency: number;
+}
+
 /** Một trục chấm điểm tập thể (ADR-036). */
 export interface AxisDefinition {
   code: string;
@@ -663,7 +767,18 @@ export interface UnitEvaluationView {
   openComplaints: number;
 }
 
+/** Một bộ trục: bộ mặc định (`unitId` null) hoặc bộ đang áp dụng cho một đơn vị (ADR-052). */
+export interface AxisSet {
+  unitId: string | null;
+  unitCode: string | null;
+  unitName: string | null;
+  /** Đơn vị có bộ riêng; false là đang dùng bộ mặc định. */
+  own: boolean;
+  axes: AxisDefinition[];
+}
+
 export const fetchUnitAxes = () => serverFetch<AxisDefinition[]>('/unit-evaluation/axes');
+export const fetchAxisSets = () => serverFetch<AxisSet[]>('/unit-evaluation/axis-sets');
 export const fetchUnitEvaluations = (periodId: string) => serverFetch<UnitEvaluationView[]>(`/unit-evaluation/periods/${periodId}`);
 export const fetchUnitEvaluation = (id: string) => serverFetch<UnitEvaluationView>(`/unit-evaluation/${id}`);
 export interface UnitReportRow {
@@ -879,3 +994,379 @@ export interface TaskStatistics {
 
 /** Loại việc để lọc: giao từ danh mục, đột xuất, hoặc do mẫu lặp định kỳ sinh ra. */
 export type WorkKind = 'CATALOG' | 'AD_HOC' | 'RECURRING';
+
+/** Giải thích điểm và mô phỏng của một hồ sơ (GET /evaluation/evaluations/:id/insight). */
+export interface InsightComponent {
+  key: string;
+  label: string;
+  basis: string;
+  rate: number | null;
+  points: number;
+  maxPoints: number;
+  lostPoints: number;
+}
+export interface InsightLine {
+  taskId: string;
+  code: string;
+  name: string;
+  coefficient: number;
+  planned: number;
+  completed: number;
+  accepted: number;
+  extra: boolean;
+  share: number | null;
+  pendingQuality: boolean;
+  lateCount: number;
+  reworkCount: number;
+  points: number;
+  lostQuantity: number;
+  lostQuality: number;
+  lostTimeliness: number;
+}
+export interface ScoreExplanation {
+  isLeader: boolean;
+  componentCount: 3 | 6;
+  components: InsightComponent[];
+  lines: InsightLine[];
+  resultScore: number;
+  resultMax: number;
+  generalScore: number | null;
+  totalScore: number | null;
+  rating: RatingCode | null;
+  capped: string[];
+  notes: string[];
+}
+export interface InsightMove {
+  kind: 'COMPLETE' | 'LATE' | 'REWORK';
+  taskId: string;
+  code: string;
+  name: string;
+  text: string;
+  deltaResult: number;
+  ratingAfter: RatingCode | null;
+}
+export interface InsightGoal {
+  current: RatingCode;
+  next: RatingCode | null;
+  threshold: number | null;
+  missing: number;
+  ceiling: number;
+  reachable: boolean;
+  steps: InsightMove[];
+}
+export interface InsightView {
+  supported: boolean;
+  reason?: string;
+  frozen: boolean;
+  explanation: ScoreExplanation | null;
+  suggestions: { opportunities: InsightMove[]; risks: InsightMove[]; goal: InsightGoal | null } | null;
+  tasks: { taskId: string; code: string; name: string; planned: number; completed: number; lateCount: number; reworkCount: number; qualityLevel: number | null; extra: boolean }[];
+  generalScore: number | null;
+  isLeader: boolean;
+}
+export interface Simulation {
+  base: { resultScore: number; totalScore: number | null; rating: RatingCode | null };
+  result: { resultScore: number; totalScore: number | null; rating: RatingCode | null };
+  explanation: ScoreExplanation;
+  deltaResult: number;
+  deltaTotal: number | null;
+}
+
+/** Cảnh báo sớm việc có nguy cơ chậm (GET /tasking/assignments/early-warning). */
+export interface WarningItem {
+  assignmentId: string;
+  level: 'HIGH' | 'MEDIUM';
+  kind: 'OVERDUE' | 'DUE_SOON' | 'BEHIND_PACE';
+  title: string;
+  taskTitle: string;
+  assigneePersonId: string;
+  assigneeName?: string;
+  dueDate: string;
+  daysLeft: number;
+  planned: number;
+  done: number;
+  elapsedPct: number;
+  donePct: number;
+  text: string;
+}
+export interface EarlyWarning {
+  today: string;
+  high: number;
+  medium: number;
+  items: WarningItem[];
+  byAssignee: { personId: string; name?: string; high: number; medium: number }[];
+}
+
+// ---- Đề án, dự án (ADR-050)
+
+export type ProjectKind = 'DE_AN' | 'DU_AN';
+export type ProjectStatus = 'DRAFT' | 'SUBMITTED' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+
+export interface Project {
+  id: string;
+  code: string;
+  kind: ProjectKind;
+  title: string;
+  objective: string | null;
+  description: string | null;
+  ownerPersonId: string;
+  unitId: string | null;
+  startDate: string;
+  endDate: string;
+  status: ProjectStatus;
+  createdByAccountId: string;
+  submittedAt: string | null;
+  approvedByAccountId: string | null;
+  approvedAt: string | null;
+  /** Lý do trả lại gần nhất (còn khi hồ sơ đã về DRAFT). */
+  returnReason: string | null;
+  /** Ngày nghiệm thu và nhận xét, hoặc lý do hủy. */
+  completedOn: string | null;
+  closeNote: string | null;
+  createdAt: string;
+}
+
+export interface ProjectProgress {
+  /** Tỷ lệ hoàn thành theo trọng số mốc, 0–1; null khi chưa có mốc. */
+  ratio: number | null;
+  total: number;
+  done: number;
+  overdue: number;
+  nextDue: string | null;
+}
+
+export interface ProjectRow {
+  project: Project;
+  ownerName: string;
+  unitName: string;
+  progress: ProjectProgress;
+  memberCount: number;
+  workCount: number;
+}
+
+export interface ProjectMilestone {
+  id: string;
+  projectId: string;
+  title: string;
+  dueDate: string;
+  weight: number;
+  assigneePersonId: string | null;
+  status: 'PENDING' | 'DONE';
+  completedOn: string | null;
+  note: string | null;
+  createdAt: string;
+  assigneeName: string | null;
+  overdue: boolean;
+}
+
+export interface ProjectAttachment {
+  id: string;
+  projectId: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  uploadedByAccountId: string;
+  createdAt: string;
+}
+
+/** Việc được giao gắn vào đề án (tóm tắt). */
+export interface ProjectWork {
+  assignmentId: string;
+  title: string;
+  taskTitle: string;
+  assigneePersonId: string;
+  dueDate: string;
+  state: string;
+  plannedQuantity: number;
+  confirmedQuantity: number;
+  lateCount: number;
+  reworkCount: number;
+  assigneeName?: string;
+}
+
+export interface ProjectCan {
+  edit: boolean;
+  submit: boolean;
+  approve: boolean;
+  return: boolean;
+  complete: boolean;
+  cancel: boolean;
+  manageMilestones: boolean;
+  link: boolean;
+  upload: boolean;
+}
+
+export interface ProjectDetail {
+  project: Project;
+  ownerName: string;
+  unitName: string;
+  members: { projectId: string; personId: string; role: 'LEAD' | 'MEMBER'; fullName: string }[];
+  milestones: ProjectMilestone[];
+  progress: ProjectProgress;
+  attachments: ProjectAttachment[];
+  work: (ProjectWork & { assigneeName: string })[];
+  can: ProjectCan;
+}
+
+export interface ProjectStatistics {
+  total: number;
+  byStatus: Record<ProjectStatus, number>;
+  byKind: Record<ProjectKind, number>;
+  active: { count: number; averageProgress: number | null; withOverdueMilestones: number; overdueMilestones: number; pastEndDate: number };
+  byUnit: { unitName: string; total: number; active: number; completed: number }[];
+}
+
+export interface ProjectWarning {
+  level: 'HIGH' | 'MEDIUM';
+  kind: 'MILESTONE_OVERDUE' | 'MILESTONE_DUE_SOON' | 'PROJECT_PAST_END';
+  projectId: string;
+  projectCode: string;
+  projectTitle: string;
+  ownerPersonId: string;
+  ownerName: string;
+  milestoneId: string | null;
+  milestoneTitle: string | null;
+  assigneePersonId: string | null;
+  dueDate: string;
+  daysLeft: number;
+  text: string;
+}
+
+export interface ProjectWarnings {
+  today: string;
+  high: number;
+  medium: number;
+  items: ProjectWarning[];
+}
+
+export const fetchProject = (id: string) => serverFetch<ProjectDetail>(`/projects/${id}`);
+
+/** Lịch họp (ADR-051): khớp `MeetingService` của máy chủ. Thời điểm là chuỗi ISO 8601 (UTC), hiển thị theo giờ Việt Nam. */
+export type MeetingStatus = 'SCHEDULED' | 'HELD' | 'CANCELLED';
+export type MeetingRole = 'ORGANIZER' | 'REQUIRED' | 'OPTIONAL';
+export type MeetingResponse = 'PENDING' | 'ACCEPTED' | 'DECLINED';
+
+export interface Meeting {
+  id: string;
+  title: string;
+  agenda: string | null;
+  startAt: string;
+  endAt: string;
+  location: string | null;
+  onlineLink: string | null;
+  /** Phòng họp chọn từ danh mục; null nếu địa điểm là chữ tự do. */
+  roomId: string | null;
+  organizerPersonId: string;
+  createdByAccountId: string;
+  projectId: string | null;
+  status: MeetingStatus;
+  cancelReason: string | null;
+  conclusion: string | null;
+  concludedAt: string | null;
+  createdAt: string;
+}
+
+export interface MeetingRow {
+  meeting: Meeting;
+  organizerName: string;
+  attendeeCount: number;
+  accepted: number;
+  declined: number;
+  myResponse: MeetingResponse | null;
+  myRole: MeetingRole | null;
+  project: { code: string; title: string } | null;
+  actionCount: number;
+  actionsOpen: number;
+}
+
+export interface MeetingConflict {
+  personId: string;
+  personName: string;
+  /** null: người xem không xem được cuộc họp kia (chỉ biết là bận). */
+  meetingId: string | null;
+  title: string | null;
+  startAt: string;
+  endAt: string;
+}
+
+export interface MeetingAttendee {
+  meetingId: string;
+  personId: string;
+  role: MeetingRole;
+  response: MeetingResponse;
+  respondedAt: string | null;
+  note: string | null;
+  attended: boolean | null;
+  fullName: string;
+}
+
+export interface MeetingAction {
+  id: string;
+  meetingId: string;
+  content: string;
+  assigneePersonId: string;
+  dueDate: string;
+  status: 'PENDING' | 'DONE';
+  completedOn: string | null;
+  createdAt: string;
+  assigneeName: string;
+  overdue: boolean;
+}
+
+export interface MeetingAttachment {
+  id: string;
+  meetingId: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  uploadedByAccountId: string;
+  createdAt: string;
+}
+
+export interface MeetingCan {
+  edit: boolean;
+  cancel: boolean;
+  respond: boolean;
+  conclude: boolean;
+  manageActions: boolean;
+  upload: boolean;
+}
+
+/** Phòng họp trong danh mục (GET /meetings/rooms). */
+export interface MeetingRoom {
+  id: string;
+  name: string;
+  capacity: number | null;
+  description: string | null;
+  status: 'ACTIVE' | 'INACTIVE';
+}
+
+/** Cuộc họp khác dùng cùng phòng vào giờ chồng lên; title null nếu người xem không xem được cuộc họp đó. */
+export interface MeetingRoomConflict {
+  meetingId: string | null;
+  title: string | null;
+  startAt: string;
+  endAt: string;
+}
+
+export interface MeetingDetail {
+  meeting: Meeting;
+  organizerName: string;
+  project: { code: string; title: string } | null;
+  attendees: MeetingAttendee[];
+  actions: MeetingAction[];
+  attachments: MeetingAttachment[];
+  conflicts: MeetingConflict[];
+  room: MeetingRoom | null;
+  roomConflicts: MeetingRoomConflict[];
+  myResponse: MeetingResponse | null;
+  can: MeetingCan;
+}
+
+export interface MyMeetingAction {
+  action: Omit<MeetingAction, 'assigneeName' | 'overdue'>;
+  meetingTitle: string;
+  overdue: boolean;
+}
+
+export const fetchMeeting = (id: string) => serverFetch<MeetingDetail>(`/meetings/${id}`);

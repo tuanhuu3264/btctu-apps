@@ -45,6 +45,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
       ) : (
         <DashboardView
           canTasks={can('task:read')}
+          canProjects={!!me.personId}
+          canMeetings={!!me.personId}
+          canReadAllProjects={can('project:read-all')}
           canReadAllTasks={can('task:read-all')}
           canReviews={can('access-review:manage') || can('access-review:confirm') || can('access-review:oversee')}
           mode={mode}

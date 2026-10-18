@@ -14,6 +14,9 @@ export class SessionEntity {
   @Column({ name: 'expires_at', type: 'timestamptz' })
   expiresAt: Date;
 
+  @Column({ name: 'last_active_at', type: 'timestamptz', default: () => 'now()' })
+  lastActiveAt: Date;
+
   @Column({ name: 'revoked_at', type: 'timestamptz', nullable: true })
   revokedAt: Date | null;
 

@@ -29,6 +29,15 @@ export class TypeOrmSessionRepository extends SessionRepository {
       .execute();
   }
 
+  async touch(tokenHash: string, at: Date): Promise<void> {
+    await this.repo
+      .createQueryBuilder()
+      .update()
+      .set({ lastActiveAt: at })
+      .where('token_hash = :tokenHash AND revoked_at IS NULL', { tokenHash })
+      .execute();
+  }
+
   async revokeAllForAccount(accountId: string, at: Date): Promise<void> {
     await this.repo
       .createQueryBuilder()
@@ -40,5 +49,5 @@ export class TypeOrmSessionRepository extends SessionRepository {
 }
 
 function toModel(e: SessionEntity): SessionModel {
-  return { id: e.id, accountId: e.accountId, tokenHash: e.tokenHash, expiresAt: e.expiresAt, revokedAt: e.revokedAt };
+  return { id: e.id, accountId: e.accountId, tokenHash: e.tokenHash, expiresAt: e.expiresAt, lastActiveAt: e.lastActiveAt, revokedAt: e.revokedAt };
 }

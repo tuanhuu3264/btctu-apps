@@ -41,3 +41,7 @@ venv/
 /docs/
 /gap/
 /knowledge/
+
+# Bản sao lưu (ADR-058): chứa dữ liệu cán bộ, không đưa vào kho mã
+backups/
+src/be/backups/
