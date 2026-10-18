@@ -457,7 +457,7 @@ export class EvaluationService {
     if (!(await this.canView(actor, evaluation, canReadAll))) {
       throw new ForbiddenException('Bạn không có quyền xem hồ sơ đánh giá này');
     }
-    return this.view(evaluation, period);
+    return this.view(evaluation, period, { actor, canReadAll });
   }
 
   /** Giải thích điểm: mỗi thành phần được bao nhiêu điểm, mất ở dòng việc nào, nên làm gì để lên mức kế tiếp. */
@@ -1109,7 +1109,11 @@ export class EvaluationService {
     if (period.status !== 'OPEN') throw new ConflictException(`Kỳ ${period.label} đã đóng`);
   }
 
-  private async view(evaluation: EvaluationModel, period: PeriodModel): Promise<EvaluationView> {
+  /**
+   * `viewer`: khi truyền vào (xem hồ sơ), khối hạn mức xuất sắc của nhóm chỉ dành cho người thẩm định, người phê duyệt và người xem toàn bộ;
+   * người được đánh giá và người xem khác không thấy điểm, thứ hạng của đồng nghiệp (ADR-060, AC-14.6).
+   */
+  private async view(evaluation: EvaluationModel, period: PeriodModel, viewer?: { actor: Actor; canReadAll: boolean }): Promise<EvaluationView> {
     const [tasks, version, authority] = await Promise.all([
       this.tasks.findByEvaluation(evaluation.id),
       this.requireVersion(period),
@@ -1198,7 +1202,8 @@ export class EvaluationService {
     }
 
     // Hạn mức xuất sắc (ADR-060): chỉ gợi ý khi hồ sơ đã thẩm định ở mức xuất sắc.
-    const quota = decided && preview.rating === 'XUAT_SAC' ? await this.quotaFor(evaluation, period) : null;
+    const quotaVisible = !viewer || viewer.canReadAll || (!!viewer.actor.personId && (viewer.actor.personId === authority.approver || viewer.actor.personId === authority.reviewer));
+    const quota = quotaVisible && decided && preview.rating === 'XUAT_SAC' ? await this.quotaFor(evaluation, period) : null;
     if (quota) {
       const note = quotaMessage(quota, quota.mine ?? undefined);
       if (note && evaluation.status !== 'APPROVED') warnings.push(note);
