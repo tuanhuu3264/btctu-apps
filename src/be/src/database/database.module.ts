@@ -17,6 +17,11 @@ import { migrations } from './migrations/index.js';
         username: config.get<string>('DB_USER', 'kpi'),
         password: config.get<string>('DB_PASSWORD', 'kpi'),
         database: config.get<string>('DB_NAME', 'kpi'),
+        // Dịch vụ PostgreSQL trên đám mây (ví dụ Supabase) bắt buộc kết nối SSL; DB_SSL_REJECT_UNAUTHORIZED=false khi chưa cài chứng chỉ gốc.
+        ssl:
+          config.get<string>('DB_SSL', 'false') === 'true'
+            ? { rejectUnauthorized: config.get<string>('DB_SSL_REJECT_UNAUTHORIZED', 'true') !== 'false' }
+            : false,
         autoLoadEntities: true,
         synchronize: false,
         migrations,
