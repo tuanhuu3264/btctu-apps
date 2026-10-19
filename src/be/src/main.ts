@@ -15,4 +15,8 @@ async function bootstrap() {
   app.use(cookieParser());
   await app.listen(process.env.PORT ?? 4000);
 }
-await bootstrap();
+// Không dùng await ở cấp tệp: trình nạp của hosting (lsnode) nạp tệp này bằng require(), không chịu được top-level await.
+bootstrap().catch((error: unknown) => {
+  console.error(error);
+  process.exit(1);
+});
