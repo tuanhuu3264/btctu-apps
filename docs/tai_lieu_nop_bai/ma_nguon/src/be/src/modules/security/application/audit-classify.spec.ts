@@ -1,0 +1,127 @@
+import { AUDIT_MODULES, AUDIT_TYPES, classifyAction } from './audit-classify.js';
+
+/** Mọi hành động mà hệ thống đang ghi (lấy từ mã nguồn) và phân loại mong đợi. Thêm hành động mới thì thêm vào đây. */
+const EXPECTED: Record<string, [string, string]> = {
+  'access.denied': ['security', 'ACCESS'],
+  'access-review.create': ['security', 'REVIEW'],
+  'access-review.item.decide': ['security', 'REVIEW'],
+  'access-review.close': ['security', 'REVIEW'],
+  'access-review.remind': ['security', 'REVIEW'],
+  'access-review.export': ['security', 'EXPORT'],
+  'account.create': ['security', 'CREATE'],
+  'account.disable': ['security', 'STATUS_CHANGE'],
+  'account.link-person': ['security', 'UPDATE'],
+  'account.unlink-person': ['security', 'UPDATE'],
+  'account.list': ['security', 'ACCESS'],
+  'assignment.create': ['organization', 'CREATE'],
+  'assignment.end': ['organization', 'STATUS_CHANGE'],
+  'audit.read': ['security', 'ACCESS'],
+  'audit.verify': ['security', 'ACCESS'],
+  'auth.account.locked': ['security', 'LOGIN'],
+  'auth.login.failure': ['security', 'LOGIN'],
+  'auth.login.success': ['security', 'LOGIN'],
+  'auth.logout': ['security', 'LOGIN'],
+  'catalog.baseline.set': ['catalog', 'UPDATE'],
+  'catalog.group.create': ['catalog', 'CREATE'],
+  'catalog.group.delete': ['catalog', 'DELETE'],
+  'catalog.group.rename': ['catalog', 'UPDATE'],
+  'catalog.item.create': ['catalog', 'CREATE'],
+  'catalog.item.deactivate': ['catalog', 'STATUS_CHANGE'],
+  'catalog.item.reactivate': ['catalog', 'STATUS_CHANGE'],
+  'catalog.item.scope': ['catalog', 'UPDATE'],
+  'catalog.item.update': ['catalog', 'UPDATE'],
+  'catalog.task.create': ['catalog', 'CREATE'],
+  'catalog.task.deactivate': ['catalog', 'STATUS_CHANGE'],
+  'catalog.task.reactivate': ['catalog', 'STATUS_CHANGE'],
+  'catalog.task.scope': ['catalog', 'UPDATE'],
+  'catalog.task.update': ['catalog', 'UPDATE'],
+  'catalog.version.approve': ['catalog', 'APPROVE'],
+  'catalog.version.create': ['catalog', 'CREATE'],
+  'catalog.version.rename': ['catalog', 'UPDATE'],
+  'document.category.create': ['documents', 'CREATE'],
+  'document.category.delete': ['documents', 'DELETE'],
+  'document.category.update': ['documents', 'UPDATE'],
+  'document.file.download': ['documents', 'ACCESS'],
+  'document.post.publish': ['documents', 'CREATE'],
+  'document.post.update': ['documents', 'UPDATE'],
+  'document.post.withdraw': ['documents', 'STATUS_CHANGE'],
+  'evaluation.approve': ['evaluation', 'APPROVE'],
+  'evaluation.create': ['evaluation', 'CREATE'],
+  'evaluation.generate': ['evaluation', 'CREATE'],
+  'evaluation.leave.update': ['evaluation', 'UPDATE'],
+  'evaluation.not-rated': ['evaluation', 'APPROVE'],
+  'evaluation.period.close': ['evaluation', 'STATUS_CHANGE'],
+  'evaluation.period.create': ['evaluation', 'CREATE'],
+  'evaluation.period.deadline': ['evaluation', 'UPDATE'],
+  'evaluation.period.remind': ['evaluation', 'OTHER'],
+  'evaluation.return': ['evaluation', 'APPROVE'],
+  'evaluation.review': ['evaluation', 'APPROVE'],
+  'evaluation.self-submit': ['evaluation', 'APPROVE'],
+  'evaluation.task.assign': ['evaluation', 'CREATE'],
+  'evaluation.task.remove': ['evaluation', 'DELETE'],
+  'evaluation.task.result': ['evaluation', 'UPDATE'],
+  'org.import': ['organization', 'CREATE'],
+  'person.create': ['organization', 'CREATE'],
+  'person.deactivate': ['organization', 'STATUS_CHANGE'],
+  'person.update': ['organization', 'UPDATE'],
+  'position.create': ['organization', 'CREATE'],
+  'position.deactivate': ['organization', 'STATUS_CHANGE'],
+  'position.reactivate': ['organization', 'STATUS_CHANGE'],
+  'position.update': ['organization', 'UPDATE'],
+  'report.draft': ['reporting', 'ACCESS'],
+  'report.draft.export': ['reporting', 'EXPORT'],
+  'report.export': ['reporting', 'EXPORT'],
+  'report.trend': ['reporting', 'ACCESS'],
+  'report.unit.draft': ['reporting', 'ACCESS'],
+  'report.unit.draft.export': ['reporting', 'EXPORT'],
+  'report.unit.export': ['reporting', 'EXPORT'],
+  'report.unit.view': ['reporting', 'ACCESS'],
+  'report.view': ['reporting', 'ACCESS'],
+  'role.grant': ['security', 'CREATE'],
+  'role.list': ['security', 'ACCESS'],
+  'role.revoke': ['security', 'STATUS_CHANGE'],
+  'tasking.assignment.cancel': ['tasking', 'STATUS_CHANGE'],
+  'tasking.assignment.create': ['tasking', 'CREATE'],
+  'tasking.assignment.update': ['tasking', 'UPDATE'],
+  'tasking.attachment.download': ['tasking', 'ACCESS'],
+  'tasking.attachment.upload': ['tasking', 'CREATE'],
+  'tasking.comment.create': ['tasking', 'CREATE'],
+  'tasking.progress.confirm': ['tasking', 'APPROVE'],
+  'tasking.progress.reject': ['tasking', 'APPROVE'],
+  'tasking.progress.report': ['tasking', 'CREATE'],
+  'tasking.task.create': ['tasking', 'CREATE'],
+  'unit-complaint.close': ['evaluation', 'APPROVE'],
+  'unit-complaint.create': ['evaluation', 'CREATE'],
+  'unit-complaint.verify': ['evaluation', 'APPROVE'],
+  'unit-evaluation.approve': ['evaluation', 'APPROVE'],
+  'unit-evaluation.axes.update': ['evaluation', 'UPDATE'],
+  'unit-evaluation.axes.reset': ['evaluation', 'UPDATE'],
+  'unit-evaluation.generate': ['evaluation', 'CREATE'],
+  'unit-evaluation.remind': ['evaluation', 'OTHER'],
+  'unit-evaluation.return': ['evaluation', 'APPROVE'],
+  'unit-evaluation.review': ['evaluation', 'APPROVE'],
+  'unit-evaluation.self-submit': ['evaluation', 'APPROVE'],
+  'unit.create': ['organization', 'CREATE'],
+  'unit.deactivate': ['organization', 'STATUS_CHANGE'],
+  'unit.reactivate': ['organization', 'STATUS_CHANGE'],
+  'unit.update': ['organization', 'UPDATE'],
+};
+
+describe('classifyAction', () => {
+  it.each(Object.entries(EXPECTED))('%s → %s', (action, [module, type]) => {
+    expect(classifyAction(action)).toEqual({ module, type });
+  });
+
+  it('chỉ trả về giá trị nằm trong danh sách cho phép', () => {
+    for (const action of Object.keys(EXPECTED)) {
+      const c = classifyAction(action);
+      expect(AUDIT_MODULES).toContain(c.module);
+      expect(AUDIT_TYPES).toContain(c.type);
+    }
+  });
+
+  it('hành động lạ rơi về system và OTHER', () => {
+    expect(classifyAction('test.1')).toEqual({ module: 'system', type: 'OTHER' });
+    expect(classifyAction('xyz')).toEqual({ module: 'system', type: 'OTHER' });
+  });
+});

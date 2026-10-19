@@ -1,0 +1,42 @@
+# PostgreSQL dùng tạm cho phát triển (ADR-010) và MinIO lưu tệp đính kèm (ADR-024; sau này đổi sang Cloudflare R2, cùng giao thức S3).
+# Chạy: docker compose -f database/docker-compose.yml up -d
+services:
+  postgres:
+    image: postgres:16
+    container_name: kpi-postgres
+    environment:
+      POSTGRES_USER: kpi
+      POSTGRES_PASSWORD: kpi
+      POSTGRES_DB: kpi
+    ports:
+      - "5432:5432"
+    volumes:
+      - kpi-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kpi -d kpi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Kho tệp tương thích S3. Cổng 9100 (API) và 9101 (giao diện quản trị) để không đụng MinIO của dự án khác (9000, 9001).
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    container_name: kpi-minio
+    command: server /data --console-address ":9101"
+    environment:
+      MINIO_ROOT_USER: kpiminio
+      MINIO_ROOT_PASSWORD: kpiminio-dev-only
+    ports:
+      - "9100:9000"
+      - "9101:9101"
+    volumes:
+      - kpi-miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  kpi-pgdata:
+  kpi-miniodata:

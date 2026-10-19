@@ -1,0 +1,15 @@
+import type { InactiveInfo, NewUnit, UnitModel, UnitPatch } from './unit.model.js';
+
+/**
+ * Cổng truy cập dữ liệu của lớp nghiệp vụ. Là abstract class để dùng làm token
+ * dependency injection; lớp nghiệp vụ không biết TypeORM (ADR-010 mục 7).
+ */
+export abstract class UnitRepository {
+  abstract findAll(): Promise<UnitModel[]>;
+  abstract findById(id: string): Promise<UnitModel | null>;
+  abstract findByCode(code: string): Promise<UnitModel | null>;
+  abstract create(data: NewUnit): Promise<UnitModel>;
+  abstract update(id: string, patch: UnitPatch): Promise<UnitModel>;
+  /** Đổi trạng thái (không xóa dòng). Kích hoạt lại thì truyền `inactiveAt`, `inactiveReason` là null. */
+  abstract setStatus(id: string, info: InactiveInfo): Promise<UnitModel>;
+}
