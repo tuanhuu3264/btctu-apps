@@ -57,5 +57,3 @@ Test: `src/be/test/app.e2e-spec.ts` (cần PostgreSQL), các `*.spec.ts` cạnh 
 |---|---|
 | `deploy/nginx/` | Nginx, TLS, cấu hình mẫu (ADR-049) |
 | `deploy/backup/README.md` | Cấu hình, đặt lịch và quy trình phục hồi sau sự cố (ADR-058) |
-| `knowledge/deliverables/_build/` | Dựng `Van-ban-tra-loi-yeu-cau-1-va-3.docx` từ `01-bo-tieu-chi-kpi-okr.md` và `03-phuong-an-attt-cap-do-3.md` |
-| `knowledge/deliverables/ho-so-cap-do/_build/` | Dựng 4 tài liệu hồ sơ đề xuất cấp độ |

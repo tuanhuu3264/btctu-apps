@@ -6,8 +6,8 @@ Ban Tổ chức Tỉnh ủy Đắk Lắk, đề kiểm tra năng lực vị trí
 
 | Thứ tự | Thư mục | Tệp | Nội dung |
 |---|---|---|---|
-| 1 | `00_Van_ban_tra_loi_de_bai` | `Van-ban-tra-loi-de-kiem-tra-nang-luc.docx` | **Văn bản trả lời cả ba yêu cầu của đề.** Có phần tóm tắt, thuật ngữ, Phần 1 (bộ tiêu chí), Phần 2 (phần mềm), Phần 3 (an toàn thông tin) và hai phụ lục đầy đủ |
-| 1b | `00_Van_ban_tra_loi_de_bai` | `Slide-thuyet-trinh.pptx` | Bộ 22 slide thuyết trình: yêu cầu 1, yêu cầu 2 (slide 3) và yêu cầu 3 |
+| 1 | (thư mục gốc) | `Van-ban-tra-loi-de-kiem-tra-nang-luc.docx` | **Văn bản trả lời cả ba yêu cầu của đề.** Có phần tóm tắt, thuật ngữ, Phần 1 (bộ tiêu chí), Phần 2 (phần mềm), Phần 3 (an toàn thông tin) và hai phụ lục đầy đủ |
+| 1b | (thư mục gốc) | `Slide-thuyet-trinh.pptx` | Bộ 22 slide thuyết trình: yêu cầu 1, yêu cầu 2 (slide 3) và yêu cầu 3 |
 | 2 | `tai_lieu_ve_tinh_diem` | `Bo-tieu-chi-KPI-OKR-va-cach-tinh-diem.docx` | Yêu cầu 1 bản đầy đủ: bộ tiêu chí cá nhân, tập thể, từng phòng, công thức tính điểm, xếp loại |
 | 3 | `tai_lieu_chuc_nang_ung_dung` | `BRD-Tai-lieu-yeu-cau-nghiep-vu.docx`, `SRS-Dac-ta-yeu-cau-phan-mem.docx` | Yêu cầu 2: nhu cầu nghiệp vụ và đặc tả từng chức năng của phần mềm (139 yêu cầu chức năng, yêu cầu phi chức năng, ma trận quyền) |
 | 4 | `tai_lieu_bao_mat` | `Phuong-an-ATTT-cap-do-3.docx` | Yêu cầu 3: xác định cấp độ an toàn thông tin, căn cứ pháp lý, phương án bảo đảm |

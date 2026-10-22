@@ -6,11 +6,7 @@ Bài kiểm tra năng lực vị trí CNTT. Đề bài: Đề kiểm tra năng l
 
 | Thư mục | Nội dung |
 |---|---|
-| `docs/` | Tài liệu gốc; `docs/ocr_md/` là bản md, có Nghị định 335/2025/NĐ-CP là căn cứ công thức KPI (PDF scan là OCR, cần đối chiếu bản gốc) |
-| `knowledge/specs/` | Đặc tả yêu cầu (SPEC-001) |
-| `knowledge/adr/` | Các quyết định kiến trúc (ADR-001 … 060) |
-| `knowledge/deliverables/` | Văn bản trả lời đề: `01-bo-tieu-chi-kpi-okr.md` (yêu cầu 1), `03-phuong-an-attt-cap-do-3.md` (yêu cầu 3). Yêu cầu 2 là phần mềm trong `src/`. `Van-ban-tra-loi-yeu-cau-1-va-3.docx` gộp hai văn bản thành một tệp Word để nộp; `Slide-tra-loi-yeu-cau-1-va-3.pptx` là bộ slide (có ghi chú diễn giả); `_build/` chứa công cụ dựng lại tệp Word từ hai văn bản md. Hồ sơ đề xuất cấp độ ở `ho-so-cap-do/` |
-| `gap/` | Khoảng trống tài liệu chưa trả lời, giả định đang dùng (GAP.md) |
+| `du_lieu_mau/` | Hai tệp Excel nguồn: cơ cấu tổ chức và danh mục công việc (dùng cho `import-org`, `import-catalog`) |
 | `database/` | PostgreSQL dùng tạm và MinIO lưu tệp đính kèm (docker compose; MinIO cổng 9100, giao diện 9101) |
 | `src/be/` | Backend NestJS (TypeScript, TypeORM) |
 | `src/fe/` | Frontend Next.js (TypeScript) dùng Ant Design 6: khung có menu theo quyền ở `src/app/(app)/`, trang đăng nhập ở `src/app/login/` |
@@ -70,7 +66,7 @@ Trạng thái triển khai hiện tại:
 | `reporting` | Dashboard theo kỳ có biểu đồ (ADR-027), trong phạm vi người xem; xuất Excel/PDF có nhật ký; dự thảo báo cáo và quyết định điền mẫu, tải Word (ADR-015, 028); báo cáo tập thể theo trục (ADR-031, 037); trang `/reports`. Chưa có: áp hạn mức xuất sắc tự động |
 | `integration` | Mô-đun rỗng, chưa triển khai (chưa kết nối Trung ương) |
 
-Chức năng bổ sung theo [PLAN-A](knowledge/plans/PLAN-A-bo-sung-chuc-nang.md):
+Chức năng bổ sung theo kế hoạch phát triển nội bộ:
 
 | Mục | Nội dung | ADR |
 |---|---|---|
@@ -101,4 +97,4 @@ Chức năng sáng tạo (quy tắc rõ ràng, không dùng AI, không đổi c�
 
 Trình diễn nhanh: (1) `npm run seed-demo-scenarios`; (2) đăng nhập `phophong` hoặc `truongphong` (mật khẩu in lúc `seed-demo`): Tổng quan có "Cảnh báo sớm" và "Cần xử lý" (đề xuất đột xuất chờ duyệt); (3) vào Đánh giá theo kỳ, mở hồ sơ kỳ đang mở: thẻ Giải thích điểm, Để lên mức tiếp theo, Mô phỏng. Muốn khôi phục dữ liệu sau khi thử: tạo bản sao CSDL trước (`CREATE DATABASE kpi_demo TEMPLATE kpi;` khi chưa có kết nối vào `kpi`), chạy trên `kpi_demo` bằng `DB_NAME=kpi_demo`, hỏng thì xóa và tạo lại từ bản mẫu.
 
-Chưa làm: kế hoạch KPI/OKR, tự động tính điểm tổng hợp cá nhân và tập thể mở rộng ([PLAN-B](knowledge/plans/PLAN-B-kpi-okr-diem-tong-hop.md)); mẫu biểu cố định theo văn bản cho báo cáo xuất; kết nối Trung ương; lịch sao lưu tự chạy, TLS và tường lửa thật (xem [lộ trình](knowledge/deliverables/03-phuong-an-attt-cap-do-3.md)). Các điểm đang dùng giả định: `gap/GAP.md`.
+Chưa làm: kế hoạch KPI/OKR, tự động tính điểm tổng hợp cá nhân và tập thể mở rộng (kế hoạch phát triển nội bộ); mẫu biểu cố định theo văn bản cho báo cáo xuất; kết nối Trung ương; lịch sao lưu tự chạy, TLS và tường lửa thật (xem [lộ trình](knowledge/deliverables/03-phuong-an-attt-cap-do-3.md)). Các điểm đang dùng giả định: `gap/GAP.md`.

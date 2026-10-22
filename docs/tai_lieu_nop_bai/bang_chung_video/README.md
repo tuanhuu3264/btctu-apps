@@ -1,6 +1,6 @@
 # Bằng chứng video: 12 luồng nghiệp vụ trên giao diện
 
-Mỗi luồng được quay bằng trình duyệt tự động thao tác như người dùng thật (đăng nhập, bấm nút, nhập liệu), có khung đỏ quanh phần tử được bấm. Quay trên máy chủ thử cục bộ với dữ liệu mẫu, độ rộng màn hình 1366 × 768. Video định dạng `.webm`, mở được bằng Chrome, Edge, Firefox hoặc VLC.
+Mỗi luồng được quay bằng trình duyệt tự động thao tác như người dùng thật (đăng nhập, nhấn nút, nhập liệu), có khung đỏ quanh phần tử được nhấn. Quay trên máy chủ thử cục bộ với dữ liệu mẫu, độ rộng màn hình 1366 × 768. Video định dạng `.webm`, mở được bằng Chrome, Edge, Firefox hoặc VLC.
 
 | Mã | Luồng | Kết quả | Video | Ảnh từng bước | Điều kiện kiểm |
 |---|---|---|---|---|---|
@@ -83,8 +83,8 @@ Trong bảng: "Điều kiện kiểm" là số điều kiện tự động đạ
 | 1 | Danh sách kỳ để chọn | `01-chon-ky.png` |
 | 2 | Đã chọn kỳ năm 2033 trong danh sách | `02-chon-2033.png` |
 | 3 | Báo cáo kỳ năm 2033: bảng điểm, phân bố xếp loại, theo đơn vị | `03-bao-cao-ky-2033.png` |
-| 4 | Đã bấm Xuất Excel (tệp lưu cùng thư mục) | `04-xuat-excel.png` |
-| 5 | Đã bấm Xuất PDF | `05-xuat-pdf.png` |
+| 4 | Đã nhấn Xuất Excel (tệp lưu cùng thư mục) | `04-xuat-excel.png` |
+| 5 | Đã nhấn Xuất PDF | `05-xuat-pdf.png` |
 | 6 | Dự thảo quyết định: nội dung điền sẵn theo hồ sơ đã duyệt, có dấu DỰ THẢO | `06-du-thao-quyet-dinh.png` |
 | 7 | Đã tải dự thảo Word | `07-du-thao-word.png` |
 
