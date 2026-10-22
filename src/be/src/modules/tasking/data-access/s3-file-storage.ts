@@ -12,14 +12,27 @@ export class S3FileStorage extends FileStorage implements OnModuleInit {
   private readonly log = new Logger(S3FileStorage.name);
   private readonly client: S3Client;
   private readonly bucket: string;
+  /** Mô tả cấu hình không chứa khóa (địa chỉ máy chủ, vùng, kiểu đường dẫn), dùng khi ghi nhật ký chẩn đoán. */
+  private readonly describe: string;
 
   constructor(config: ConfigService) {
     super();
     this.bucket = config.get<string>('S3_BUCKET', 'kpi-files');
+    const endpoint = config.get<string>('S3_ENDPOINT', 'http://localhost:9100');
+    const region = config.get<string>('S3_REGION', 'us-east-1');
+    const forcePathStyle = config.get<string>('S3_FORCE_PATH_STYLE', 'true') === 'true';
+    let where = endpoint;
+    try {
+      const u = new URL(endpoint);
+      where = `${u.protocol}//${u.host}${u.pathname === '/' ? '' : u.pathname}`;
+    } catch {
+      where = `(không phải địa chỉ hợp lệ, dài ${endpoint.length} ký tự)`;
+    }
+    this.describe = `máy chủ ${where}, vùng "${region}", kiểu đường dẫn ${forcePathStyle ? 'path' : 'virtual-host'}`;
     this.client = new S3Client({
-      endpoint: config.get<string>('S3_ENDPOINT', 'http://localhost:9100'),
-      region: config.get<string>('S3_REGION', 'us-east-1'),
-      forcePathStyle: config.get<string>('S3_FORCE_PATH_STYLE', 'true') === 'true',
+      endpoint,
+      region,
+      forcePathStyle,
       credentials: {
         accessKeyId: config.get<string>('S3_ACCESS_KEY', 'kpiminio'),
         secretAccessKey: config.get<string>('S3_SECRET_KEY', 'kpiminio-dev-only'),
@@ -39,7 +52,7 @@ export class S3FileStorage extends FileStorage implements OnModuleInit {
         await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }));
         this.log.log(`Đã tạo bucket ${this.bucket}`);
       } catch (e) {
-        this.log.warn(`Chưa kết nối được kho tệp: kiểm tra bucket lỗi ${detail}; tạo bucket lỗi: ${(e as Error).message}. Tệp đính kèm sẽ chưa dùng được`);
+        this.log.warn(`Chưa kết nối được kho tệp: cấu hình ${this.describe}; kiểm tra bucket lỗi ${detail}; tạo bucket lỗi: ${(e as Error).message}. Tệp đính kèm sẽ chưa dùng được`);
       }
     }
   }
