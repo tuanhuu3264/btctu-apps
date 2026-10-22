@@ -53,8 +53,8 @@ function securityConfigFromEnv(env: ConfigService): SecurityConfig {
   cfg.mfaMode = mode;
   const key = env.get<string>('MFA_ENCRYPTION_KEY');
   if (key) cfg.mfaKey = parseKey(key);
-  else if (mode === 'required' || env.get<string>('NODE_ENV') === 'production') {
-    throw new Error('Thiếu MFA_ENCRYPTION_KEY (64 ký tự hex): bắt buộc khi MFA_MODE=required hoặc NODE_ENV=production');
+  else if (mode === 'required' || (mode !== 'off' && env.get<string>('NODE_ENV') === 'production')) {
+    throw new Error('Thiếu MFA_ENCRYPTION_KEY (64 ký tự hex): bắt buộc khi MFA_MODE=required, hoặc khi NODE_ENV=production mà MFA_MODE khác off');
   }
   cfg.mfaIssuer = env.get<string>('MFA_ISSUER', cfg.mfaIssuer);
   return cfg;
