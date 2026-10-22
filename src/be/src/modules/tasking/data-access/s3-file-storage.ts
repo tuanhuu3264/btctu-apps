@@ -31,12 +31,15 @@ export class S3FileStorage extends FileStorage implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     try {
       await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
-    } catch {
+    } catch (head) {
+      // Ghi rõ mã lỗi của bước kiểm tra để phân biệt sai khóa (403), sai tên bucket hoặc sai địa chỉ (404), không kết nối được.
+      const info = head as { name?: string; $metadata?: { httpStatusCode?: number } };
+      const detail = `${info.name ?? 'Lỗi'} (HTTP ${info.$metadata?.httpStatusCode ?? 'không có'}), bucket "${this.bucket}"`;
       try {
         await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }));
         this.log.log(`Đã tạo bucket ${this.bucket}`);
       } catch (e) {
-        this.log.warn(`Chưa kết nối được kho tệp (${(e as Error).message}); tệp đính kèm sẽ chưa dùng được`);
+        this.log.warn(`Chưa kết nối được kho tệp: kiểm tra bucket lỗi ${detail}; tạo bucket lỗi: ${(e as Error).message}. Tệp đính kèm sẽ chưa dùng được`);
       }
     }
   }
