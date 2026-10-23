@@ -9,6 +9,8 @@ export class SecurityConfig {
   cookieName = 'sid';
   /** Bật ở môi trường thật chạy HTTPS. */
   cookieSecure = false;
+  /** Miền của cookie phiên (ví dụ `.example.com`) khi giao diện và API là hai tên miền phụ cùng site; bỏ trống thì cookie chỉ của máy chủ API. */
+  cookieDomain: string | undefined = undefined;
   /**
    * off: không dùng MFA; optional: ai đã đăng ký thì phải nhập mã, ai chưa thì đăng nhập như cũ (mặc định, để phát triển và thử nghiệm);
    * required: vai trò quản trị phải đăng ký và nhập mã (bắt buộc khi vận hành thật, ADR-048).

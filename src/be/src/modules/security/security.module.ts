@@ -48,6 +48,7 @@ function securityConfigFromEnv(env: ConfigService): SecurityConfig {
   if (!Number.isFinite(cfg.sessionIdleMinutes) || cfg.sessionIdleMinutes < 5) throw new Error('SESSION_IDLE_MINUTES phải là số từ 5 trở lên');
   cfg.minPasswordLength = Number(env.get('PASSWORD_MIN_LENGTH', cfg.minPasswordLength));
   cfg.cookieSecure = env.get<string>('COOKIE_SECURE', 'false') === 'true';
+  cfg.cookieDomain = env.get<string>('COOKIE_DOMAIN', '')?.trim() || undefined;
   const mode = env.get<string>('MFA_MODE', cfg.mfaMode);
   if (mode !== 'off' && mode !== 'optional' && mode !== 'required') throw new Error(`MFA_MODE không hợp lệ: ${mode} (off, optional, required)`);
   cfg.mfaMode = mode;

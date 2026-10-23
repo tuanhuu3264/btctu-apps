@@ -119,6 +119,7 @@ export class AuthController {
       secure: this.config.cookieSecure,
       expires: result.session.expiresAt,
       path: '/',
+      domain: this.config.cookieDomain,
     });
     return result.account;
   }
@@ -128,7 +129,7 @@ export class AuthController {
   @HttpCode(204)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<void> {
     await this.auth.logout(req.cookies?.[this.config.cookieName] as string | undefined);
-    res.clearCookie(this.config.cookieName, { path: '/' });
+    res.clearCookie(this.config.cookieName, { path: '/', domain: this.config.cookieDomain });
   }
 
   /** Thời gian còn lại của phiên. Không tính là thao tác (giao diện hỏi định kỳ để cảnh báo trước khi phiên đóng). */
