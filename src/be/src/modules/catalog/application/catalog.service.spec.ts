@@ -200,6 +200,41 @@ describe('CatalogService: phiên bản và công việc', () => {
       expect((await c.catalog.current()).version.label).toBe('Bản 2');
     });
 
+    it('hết hiệu lực: trước thời điểm đó vẫn là bản hiện hành, sau đó không còn; đọc lại bản cũ vẫn được', async () => {
+      const v1 = (await seedDraft(c, 'Bản 1')).version;
+      await c.catalog.approve(approver, v1.id);
+      const end = new Date(c.clock.now().getTime() + 3 * 86_400_000);
+      const view = await c.catalog.expire(approver, v1.id, end);
+      expect(view.version.effectiveTo).toEqual(end);
+
+      c.clock.advanceDays(2);
+      expect((await c.catalog.current()).version.label).toBe('Bản 1'); // còn hiệu lực
+
+      c.clock.advanceDays(2);
+      await expect(c.catalog.current()).rejects.toBeInstanceOf(NotFoundException); // hết hiệu lực
+      expect((await c.catalog.getVersion(v1.id)).items.length).toBeGreaterThan(0); // việc đã giao vẫn tra được bản cũ
+      expect(c.audit.map((a) => a.action)).toContain('catalog.version.expire');
+    });
+
+    it('bản mới hết hiệu lực thì không có bản hiện hành: bản cũ hơn không sống lại', async () => {
+      const v1 = (await seedDraft(c, 'Bản 1')).version;
+      await c.catalog.approve(approver, v1.id);
+      const v2 = await c.catalog.createVersion({ label: 'Bản 2', copyFromVersionId: v1.id });
+      c.clock.advanceDays(1);
+      await c.catalog.approve(approver, v2.id);
+      await c.catalog.expire(approver, v2.id, new Date(c.clock.now().getTime() + 86_400_000));
+      c.clock.advanceDays(2);
+      await expect(c.catalog.current()).rejects.toBeInstanceOf(NotFoundException); // bản 1 không sống lại
+    });
+
+    it('chỉ đặt hết hiệu lực cho bản đã phê duyệt và phải sau thời điểm bắt đầu', async () => {
+      const draft = (await seedDraft(c, 'Nháp')).version;
+      await expect(c.catalog.expire(approver, draft.id, new Date('2099-01-01'))).rejects.toBeInstanceOf(ConflictException);
+      await c.catalog.approve(approver, draft.id);
+      await expect(c.catalog.expire(approver, draft.id, new Date('2000-01-01'))).rejects.toBeInstanceOf(ConflictException);
+      await expect(c.catalog.expire(approver, draft.id, new Date('khong-hop-le'))).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it('bản nháp chưa phê duyệt không bao giờ là bản đang có hiệu lực', async () => {
       await seedDraft(c);
       await expect(c.catalog.current()).rejects.toBeInstanceOf(NotFoundException);

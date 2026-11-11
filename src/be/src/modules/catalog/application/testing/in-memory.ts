@@ -74,6 +74,7 @@ export class InMemoryVersions extends CatalogVersionRepository {
       id: nextId('v'),
       status: 'DRAFT',
       effectiveFrom: null,
+      effectiveTo: null,
       approvedAt: null,
       approvedBy: null,
     };
@@ -90,6 +91,9 @@ export class InMemoryVersions extends CatalogVersionRepository {
   }
   async approve(id: string, approvedBy: string, approvedAt: Date, effectiveFrom: Date) {
     Object.assign(this.rows.find((v) => v.id === id)!, { status: 'APPROVED', approvedBy, approvedAt, effectiveFrom });
+  }
+  async setEffectiveTo(id: string, effectiveTo: Date) {
+    this.rows.find((v) => v.id === id)!.effectiveTo = effectiveTo;
   }
 }
 

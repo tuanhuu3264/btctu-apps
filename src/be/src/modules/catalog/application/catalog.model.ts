@@ -36,6 +36,8 @@ export interface CatalogVersionModel {
   /** Mã công việc chuẩn: điểm của nó là mẫu số của hệ số quy đổi (ADR-013 mục 4). */
   baselineItemCode: string | null;
   effectiveFrom: Date | null;
+  /** Hết hiệu lực từ thời điểm này (không giao mới từ phiên bản được nữa; việc đã giao vẫn tính). null: chưa đặt. */
+  effectiveTo: Date | null;
   approvedAt: Date | null;
   approvedBy: string | null;
   sourceNote: string | null;

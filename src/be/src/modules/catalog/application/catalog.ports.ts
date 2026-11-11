@@ -30,6 +30,8 @@ export abstract class CatalogVersionRepository {
   abstract rename(id: string, name: string): Promise<CatalogVersionModel>;
   abstract setBaseline(id: string, itemCode: string | null): Promise<void>;
   abstract approve(id: string, approvedBy: string, approvedAt: Date, effectiveFrom: Date): Promise<void>;
+  /** Đặt thời điểm hết hiệu lực của phiên bản đã phê duyệt. */
+  abstract setEffectiveTo(id: string, effectiveTo: Date): Promise<void>;
 }
 
 export abstract class CatalogTaskRepository {

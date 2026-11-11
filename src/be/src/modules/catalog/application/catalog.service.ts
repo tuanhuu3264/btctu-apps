@@ -75,7 +75,12 @@ export class CatalogService {
       .filter((v) => v.status === 'APPROVED' && v.effectiveFrom && v.effectiveFrom <= now)
       .sort((a, b) => b.effectiveFrom!.getTime() - a.effectiveFrom!.getTime());
     if (effective.length === 0) throw new NotFoundException('Chưa có danh mục nào được phê duyệt và đang có hiệu lực');
-    return this.view(effective[0]);
+    // Chỉ xét bản bắt đầu hiệu lực muộn nhất: bản đó hết hiệu lực thì không có bản hiện hành, bản cũ hơn không sống lại.
+    const latest = effective[0];
+    if (latest.effectiveTo !== null && now >= latest.effectiveTo) {
+      throw new NotFoundException('Danh mục đang có hiệu lực đã hết hiệu lực; chưa có phiên bản mới');
+    }
+    return this.view(latest);
   }
 
   async createVersion(input: CreateVersionInput): Promise<CatalogVersionModel> {
@@ -510,6 +515,32 @@ export class CatalogService {
       details: { label: version.label, items: items.length, effectiveFrom: from, warnings: result.warnings.length },
     });
     return result;
+  }
+
+  /**
+   * Đặt thời điểm hết hiệu lực của phiên bản đã phê duyệt. Từ thời điểm đó phiên bản không còn là bản đang có hiệu lực nên không
+   * giao việc mới từ đó được nữa (kể cả việc lặp); việc đã giao và kỳ đã gắn với phiên bản vẫn đọc và tính điểm bình thường
+   * (chúng lưu mã phiên bản). Đặt lại để kéo dài hoặc rút ngắn được. Bản nháp không có hiệu lực nên không đặt được.
+   */
+  async expire(actor: { id: string }, versionId: string, effectiveTo: Date): Promise<CatalogVersionView> {
+    const version = await this.requireVersion(versionId);
+    if (version.status !== 'APPROVED' || !version.effectiveFrom) {
+      throw new ConflictException('Chỉ đặt thời điểm hết hiệu lực cho phiên bản đã phê duyệt');
+    }
+    if (Number.isNaN(effectiveTo.getTime())) throw new BadRequestException('Thời điểm hết hiệu lực không hợp lệ');
+    if (effectiveTo <= version.effectiveFrom) {
+      throw new ConflictException('Thời điểm hết hiệu lực phải sau thời điểm bắt đầu hiệu lực của phiên bản');
+    }
+    const previous = version.effectiveTo;
+    await this.versions.setEffectiveTo(versionId, effectiveTo);
+    await this.audit.record({
+      action: 'catalog.version.expire',
+      outcome: 'SUCCESS',
+      targetType: 'catalog_version',
+      targetId: versionId,
+      details: { label: version.label, by: actor.id, effectiveTo, previousEffectiveTo: previous },
+    });
+    return this.getVersion(versionId);
   }
 
   private async view(version: CatalogVersionModel): Promise<CatalogVersionView> {

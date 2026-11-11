@@ -88,6 +88,10 @@ export class TypeOrmCatalogVersionRepository extends CatalogVersionRepository {
   async approve(id: string, approvedBy: string, approvedAt: Date, effectiveFrom: Date): Promise<void> {
     await this.repo.update({ id }, { status: 'APPROVED', approvedBy, approvedAt, effectiveFrom });
   }
+
+  async setEffectiveTo(id: string, effectiveTo: Date): Promise<void> {
+    await this.repo.update({ id }, { effectiveTo });
+  }
 }
 
 @Injectable()
@@ -199,6 +203,7 @@ const toVersion = (e: CatalogVersionEntity): CatalogVersionModel => ({
   status: e.status,
   baselineItemCode: e.baselineItemCode,
   effectiveFrom: e.effectiveFrom,
+  effectiveTo: e.effectiveTo,
   approvedAt: e.approvedAt,
   approvedBy: e.approvedBy,
   sourceNote: e.sourceNote,

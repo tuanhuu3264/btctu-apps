@@ -3,7 +3,7 @@ import { CurrentAccount, RequirePermission } from '../../security/index.js';
 import type { CurrentAccountModel } from '../../security/index.js';
 import { CatalogService } from '../application/catalog.service.js';
 import type { CatalogGroupModel, CatalogItemModel, CatalogTaskModel, CatalogVersionModel, CatalogVersionView } from '../application/catalog.model.js';
-import { AddItemDto, ApproveVersionDto, CreateCatalogTaskDto, CreateGroupDto, CreateVersionDto, DeactivateCatalogDto, ScopeDto, SetBaselineDto, UpdateCatalogTaskDto, UpdateGroupDto, UpdateItemDto, UpdateVersionDto } from './catalog.dto.js';
+import { AddItemDto, ApproveVersionDto, ExpireVersionDto, CreateCatalogTaskDto, CreateGroupDto, CreateVersionDto, DeactivateCatalogDto, ScopeDto, SetBaselineDto, UpdateCatalogTaskDto, UpdateGroupDto, UpdateItemDto, UpdateVersionDto } from './catalog.dto.js';
 
 /** Bỏ các khóa undefined (DTO khai báo thuộc tính nên khóa luôn tồn tại) để cập nhật một phần không ghi đè. */
 function definedOnly<T extends object>(dto: T): Partial<T> {
@@ -113,6 +113,17 @@ export class CatalogController {
     @Body() dto: ApproveVersionDto,
   ): Promise<CatalogVersionView> {
     return this.catalog.approve(approver, id, dto.effectiveFrom ? new Date(dto.effectiveFrom) : undefined);
+  }
+
+  /** Đặt thời điểm hết hiệu lực: sau thời điểm đó không giao mới từ phiên bản; việc đã giao vẫn tính. */
+  @Post('versions/:id/expire')
+  @RequirePermission('catalog:approve')
+  expire(
+    @CurrentAccount() actor: CurrentAccountModel,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ExpireVersionDto,
+  ): Promise<CatalogVersionView> {
+    return this.catalog.expire(actor, id, new Date(dto.effectiveTo));
   }
 
   /** Gán phạm vi áp dụng (đơn vị, vị trí) cho một công việc; rỗng cả hai là việc chung (ADR-021). */

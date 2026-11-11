@@ -209,6 +209,12 @@ export class ApproveVersionDto {
   effectiveFrom?: string;
 }
 
+/** Thời điểm hết hiệu lực của phiên bản đã phê duyệt (bắt buộc). */
+export class ExpireVersionDto {
+  @IsDateString()
+  effectiveTo: string;
+}
+
 /** Lý do ngừng sử dụng (không bắt buộc). */
 export class DeactivateCatalogDto {
   @IsOptional()

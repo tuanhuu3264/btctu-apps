@@ -42,6 +42,7 @@ import { RatingEvents1763500000000 } from './1763500000000-RatingEvents.js';
 import { ProgressWaiver1763600000000 } from './1763600000000-ProgressWaiver.js';
 import { SessionIdle1763700000000 } from './1763700000000-SessionIdle.js';
 import { EvaluationRevocation1763800000000 } from './1763800000000-EvaluationRevocation.js';
+import { CatalogVersionExpiry1763900000000 } from './1763900000000-CatalogVersionExpiry.js';
 import { TaskCollaboration1761300000000 } from './1761300000000-TaskCollaboration.js';
 
 /** Danh sách migration theo thứ tự. Thêm migration mới vào cuối mảng. */
@@ -91,4 +92,5 @@ export const migrations = [
   ProgressWaiver1763600000000,
   SessionIdle1763700000000,
   EvaluationRevocation1763800000000,
+  CatalogVersionExpiry1763900000000,
 ];

@@ -39,6 +39,9 @@ export class CatalogVersionEntity {
   @Column({ name: 'effective_from', type: 'timestamptz', nullable: true })
   effectiveFrom: Date | null;
 
+  @Column({ name: 'effective_to', type: 'timestamptz', nullable: true })
+  effectiveTo: Date | null;
+
   @Column({ name: 'approved_at', type: 'timestamptz', nullable: true })
   approvedAt: Date | null;
 
